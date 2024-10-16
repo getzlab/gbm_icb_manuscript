@@ -1,0 +1,135 @@
+---
+title: "Cox regression comparison plots - GLASS SoC vs. ICB"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(ggrepel)
+library(ggpubr)
+```
+
+```{r}
+nd <- read_delim("../data/nd_cox_comparisons.txt", show_col_types = FALSE, name_repair = 'universal')
+rc <- read_delim("../data/rc_cox_comparisons.txt", show_col_types = FALSE, name_repair = 'universal')
+
+output_folder <- '../results/'
+```
+
+Patient counts
+```{r}
+unique(nd$n_tot_icb)
+unique(nd$n_tot_glass)
+unique(rc$n_tot_icb)
+unique(rc$n_tot_glass)
+```
+
+ICB volcano plots
+```{r}
+results <- bind_rows(nd %>% mutate(cohort = 'Newly diagnosed ICB (n = 38)'),
+                     rc %>% mutate(cohort = 'Recurrent ICB (n = 129)')) %>% 
+  filter(!is.na(p_adj_icb)) %>%
+  mutate(label = ifelse(p_adj_icb < 0.1, str_replace(index, '_', ' ') %>% toupper, '')) %>% 
+  mutate(color = factor(ifelse(p_adj_icb < 0.1, 'q < 0.1', 'Not sig.'), levels = c('q < 0.1', 'Not sig.')))
+
+p_volcano <- ggplot(data = results, aes(x = log(exp.coef._icb), y = -log10(p_adj_icb),
+                           color = color, label = label)) +
+  scale_color_manual(values = c('red', 'grey')) +
+  facet_wrap(~cohort, nrow = 2, scales = 'fixed') +
+  geom_point() +
+  geom_hline(yintercept = 1, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_text_repel(min.segment.length = 0.1, box.padding = 0.5,
+                  seed = 42,
+                  force = 1,
+                  max.overlaps = Inf,
+                  show.legend = FALSE,
+                  size = 3) +
+  xlim(-(max(round(log(results$exp.coef._icb), 1)) + 0.1), max(round(log(results$exp.coef._icb), 1)) + 0.1) +
+  ylim(0, 4) +
+  labs(x = expression(ln~(hazard~ratio)), y = expression(-log[10]~(q))) +
+  annotate('segment', x = 0.25, y = 3.5, xend = 1, yend = 3.5, 
+         linewidth = 1, linejoin = 'mitre',
+         arrow = arrow(type = 'closed', length = unit(0.05, 'npc'))) +
+  annotate('segment', x = -0.25, y = 3.5, xend = -1, yend = 3.5, 
+         linewidth = 1, linejoin = 'mitre',
+         arrow = arrow(type = 'closed', length = unit(0.05, 'npc'))) +
+  annotate('text', x = -0.75, y = 3.85, label = 'Longer OS', color = 'black', size = 3) +
+  annotate('text', x = 0.75, y = 3.85, label = 'Shorter OS', color = 'black', size = 3) +
+  theme_classic(base_size = 16) +
+  theme(strip.background = element_blank(),
+        legend.title = element_blank(),
+        legend.position = 'bottom') +
+  guides(color = guide_legend(ncol = 1))
+
+p_volcano
+```
+
+Comparisons to GLASS
+```{r}
+results <- bind_rows(nd %>% mutate(cohort = 'Newly diagnosed / Primary (n = 38 ICB, 152 GLASS)'),
+                     rc %>% mutate(cohort = 'Recurrent (n = 129 ICB, 169 GLASS)')) %>% 
+  drop_na
+
+results <- results %>%
+  mutate(color = case_when(
+    p_adj_icb < 0.1 & p_adj_glass < 0.1 ~ 'Sig. in both',
+    p_adj_icb < 0.1 ~ 'Sig. in ICB',
+    p_adj_glass < 0.1 ~ 'Sig. in GLASS',
+    TRUE ~ 'Not sig.'
+  )) %>%
+  mutate(color = factor(color, levels = c('Sig. in both', 'Sig. in ICB', 'Sig. in GLASS', 'Not sig.'))) %>%
+  mutate(label = ifelse(str_equal(color, 'Not sig.'), '', str_replace(index, '_', ' ') %>% toupper),
+         icb_err_low = ifelse(str_equal(color, 'Not sig.'), exp.coef._icb, exp.coef..lower.95._icb),
+         icb_err_up = ifelse(str_equal(color, 'Not sig.'), exp.coef._icb, exp.coef..upper.95._icb),
+         glass_err_low = ifelse(str_equal(color, 'Not sig.'), exp.coef._glass, exp.coef..lower.95._glass),
+         glass_err_up = ifelse(str_equal(color, 'Not sig.'), exp.coef._glass, exp.coef..upper.95._glass))
+
+p_comparison <- ggplot(data = results, aes(x = exp.coef._icb, y = exp.coef._glass,
+                           color = color, label = label)) +
+  scale_color_manual(values = c('purple', 'red', 'blue', 'grey'),
+                     limits = c('Sig. in both', 'Sig. in ICB', 'Sig. in GLASS', 'Not sig.')) +
+  facet_wrap(~cohort, nrow = 2, scales = 'fixed') +
+  geom_point() +
+  geom_errorbar(aes(ymin = glass_err_low, ymax = glass_err_up), alpha = 0.35) +
+  geom_errorbarh(aes(xmin = icb_err_low, xmax = icb_err_up), alpha = 0.35) +
+  geom_text_repel(min.segment.length = 0, box.padding = 0.35,
+                  seed = 42,
+                  force = 2,
+                  max.overlaps = Inf,
+                  show.legend = FALSE,
+                  size = 3) +
+  geom_hline(yintercept = 1, alpha = 0.5) +
+  geom_vline(xintercept = 1, alpha = 0.5) +
+  scale_x_continuous(trans = 'log2', breaks = c(0.25,1,4,16)) +
+  scale_y_continuous(trans = 'log2', breaks = c(0.25,1,4)) +
+  labs(x = 'ICB hazard ratio', y = 'GLASS hazard ratio') +
+  annotate('segment', x = 0.3, y = 0.5, xend = 0.45, yend = 0.5, 
+         linewidth = 1, linejoin = 'mitre',
+         arrow = arrow(type = 'closed', length = unit(0.05, 'npc'))) +
+  annotate('segment', x = 0.3, y = 0.5, xend = 0.3, yend = 0.8, 
+         linewidth = 1, linejoin = 'mitre',
+         arrow = arrow(type = 'closed', length = unit(0.05, 'npc'))) +
+  annotate('text', x = 0.38, y = 0.38, label = 'Shorter OS', color = 'black', size = 3) +
+  theme_classic(base_size = 16) +
+  theme(strip.background = element_blank(),
+        legend.title = element_blank(),
+        legend.position = 'bottom') +
+  guides(color = guide_legend(ncol = 1))
+
+p_comparison
+```
+
+Combine the panels
+```{r}
+p_combined <- ggarrange(p_volcano, p_comparison, ncol = 2, align = 'hv',
+                        widths = c(1,1.5))
+
+p_combined %>% ggsave(filename = paste0(output_folder, '2ABEF.cox_combined.png'),
+             dpi = 450, width = 11, height = 7, units = 'in')
+p_combined %>% ggsave(filename = paste0(output_folder, '2ABEF.cox_combined.pdf'),
+             width = 11, height = 7)
+
+p_combined
+```
+

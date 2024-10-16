@@ -1,0 +1,323 @@
+---
+title: "TMB: truncal and subclonal; associations with OS"
+output: html_notebook
+---
+
+This notebook tests associations of pre-ICB TMB with overall survival from ICB start.
+- OncoPanel data: assay-reported non-syn TMB
+- WES data: truncal non-syn TMB and total non-syn TMB
+- Combined OncoPanel and WES: using total non-syn TMB from WES
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggpubr)
+library(survival)
+library(survminer)
+```
+
+```{r}
+wes_tmb_sheet <- read_delim('../data/icb_wes_mut_counts.tsv',
+                     show_col_types = FALSE) %>% 
+  mutate(clonal_status = gsub('_pair', '', clonal_status))
+
+oncopanel_tmb_sheet <- read_delim('../data/oncopanel_sample_sheet.tsv',
+                                  show_col_types = FALSE)
+
+oncopanel_sample_dict <- read_excel('../data/oncopanel_clinical.xlsx') %>% 
+  filter(!is.na(id_broad_sample)) %>% 
+  select(id_uniquesample, id_broad_sample)
+
+broad_participant_sheet <- read_delim('../data/participant_cohort_sheet.tsv',
+                            show_col_types = FALSE)
+
+broad_sample_sheet <- read_delim('../data/sample_cohort_sheet.tsv',
+                            show_col_types = FALSE) %>% 
+    filter(str_equal(tumor_normal, 'tumor'))
+```
+
+Create tidy dataframes
+```{r}
+wes_samples <- broad_sample_sheet %>%
+  filter(usable_wes)
+
+oncopanel_samples <- broad_sample_sheet %>% 
+  filter(usable_oncopanel)
+
+oncopanel_tmb_sheet <- oncopanel_tmb_sheet %>% 
+  mutate(id_uniquesample = as.character(id_uniquesample)) %>% 
+  left_join(oncopanel_sample_dict, by = 'id_uniquesample') %>% 
+  mutate(sample_id = ifelse(is.na(id_broad_sample),
+                           id_uniquesample, id_broad_sample)) %>% 
+  select(sample_id, MUTATIONAL_BURDEN) %>% 
+  mutate(sample_id = ifelse(str_equal(sample_id, 'GBM.ICB-3-14.637.Post.FFbank'), 'GBM.ICB-3-14.233.Pre', sample_id))
+```
+
+# OncoPanel data: assay-reported TMB
+```{r}
+oncopanel_latest_pre_tmb <- oncopanel_samples %>% 
+  group_by(participant_id_legacy) %>% 
+  filter(collection_date_dfd == max(collection_date_dfd)) %>% 
+  ungroup %>% 
+  left_join(oncopanel_tmb_sheet, by = c('sample_id_legacy' = 'sample_id')) %>% 
+  left_join(broad_participant_sheet, by = 'participant_id_legacy') %>% 
+  filter(!is.na(MUTATIONAL_BURDEN)) %>% 
+  group_by(`ICB for Newly diagnosed`) %>%
+  mutate(deceased_bool = str_equal(Deceased, 'Deceased'),
+         newly_diagnosed = str_equal(`ICB for Newly diagnosed`, 'Newly-diagnosed'),
+         TMB_bin =  factor(ifelse(MUTATIONAL_BURDEN >= median(MUTATIONAL_BURDEN), 'TMB above median', 'TMB below median'), levels = c('TMB above median', 'TMB below median'))) %>%
+  ungroup %>%
+  select(participant_id_legacy, osicb, deceased_bool, newly_diagnosed, TMB_bin,
+         MUTATIONAL_BURDEN)
+
+hist(oncopanel_latest_pre_tmb$MUTATIONAL_BURDEN, breaks = 20)
+```
+
+```{r}
+fit_oncopanel_ND <- survfit(Surv(osicb, deceased_bool) ~ TMB_bin,
+               data = oncopanel_latest_pre_tmb %>% filter(newly_diagnosed))
+
+fit_oncopanel_R <- survfit(Surv(osicb, deceased_bool) ~ TMB_bin,
+               data = oncopanel_latest_pre_tmb %>% filter(!newly_diagnosed))
+
+p_ND <- ggsurvplot(fit_oncopanel_ND,
+           pval = TRUE,
+           conf.int = TRUE,
+           xscale = 'd_y',
+           break.x.by = 365.25,
+           xlab = 'Time from ICB start (years)',
+           ylab = 'Fraction surviving',
+           ggtheme = theme_classic(),
+           palette = c('#7A6288', '#C7AFD5'),
+           legend = 'bottom',
+           legend.title = '',
+           legend.labs = c('TMB above median', 'TMB below median'),
+           title = paste0('Newly diagnosed OncoPanel cohort\n(n = ',
+                          oncopanel_latest_pre_tmb %>% filter(newly_diagnosed) %>% dim %>% .[1],
+                          ')')
+           ) %++% guides(color = guide_legend(nrow = 2))
+
+p_R <- ggsurvplot(fit_oncopanel_R,
+           pval = TRUE,
+           conf.int = TRUE,
+           xscale = 'd_y',
+           break.x.by = 365.25,
+           xlab = 'Time from ICB start (years)',
+           ylab = 'Fraction surviving',
+           ggtheme = theme_classic(),
+           palette = c('#588556', '#A5D2A2'),
+           legend = 'bottom',
+           legend.title = '',
+           legend.labs = c('TMB above median', 'TMB below median'),
+           title = paste0('Recurrent OncoPanel cohort\n(n = ',
+                          oncopanel_latest_pre_tmb %>% filter(!newly_diagnosed) %>% dim %>% .[1],
+                          ')')
+           ) %++% guides(color = guide_legend(nrow = 2))
+
+p_combined <- ggarrange(p_ND$plot, p_R$plot,
+                        common.legend = FALSE)
+
+p_combined
+
+```
+
+# WES data
+```{r}
+pre_wes_pts <- wes_samples %>%
+  filter(str_equal(pre_post, 'Pre')) %>% 
+  pull(participant_id_legacy) %>% 
+  unique
+
+wes_latest_pre_samples <- wes_samples %>% 
+  filter(str_equal(pre_post, 'Pre')) %>% 
+  group_by(participant_id_legacy) %>% 
+  filter(collection_date_dfd == max(collection_date_dfd)) %>%
+  pull(sample_id_legacy)
+
+wes_truncal_tmb <- wes_tmb_sheet %>%
+  filter(Patient_ID %in% pre_wes_pts & str_equal(clonal_status, 'clonal')) %>% 
+  select(Patient_ID, tmb) %>% 
+  rename(truncal_TMB = tmb)
+
+wes_latest_pre_tmb <- wes_tmb_sheet %>% 
+  filter(clonal_status %in% wes_latest_pre_samples) %>% 
+  group_by(Patient_ID) %>% 
+  summarize(pre_TMB = mean(tmb))
+
+wes_tmb <- wes_truncal_tmb %>%
+  left_join(wes_latest_pre_tmb, by = 'Patient_ID')
+
+wes_tmb <- wes_tmb %>%
+  left_join(broad_participant_sheet, by = c('Patient_ID' = 'participant_id_legacy')) %>%
+  group_by(`ICB for Newly diagnosed`) %>%
+  mutate(deceased_bool = str_equal(Deceased, 'Deceased'),
+         newly_diagnosed = str_equal(`ICB for Newly diagnosed`, 'Newly-diagnosed'),
+         truncal_TMB_bin = factor(ifelse(truncal_TMB >= median(truncal_TMB), 'TMB above median', 'TMB below median'), levels = c('TMB above median', 'TMB below median')),
+         pre_TMB_bin = factor(ifelse(pre_TMB >= median(pre_TMB), 'TMB above median', 'TMB below median'), levels = c('TMB above median', 'TMB below median'))) %>%
+  ungroup %>%
+  select(Patient_ID, truncal_TMB, truncal_TMB_bin, pre_TMB, pre_TMB_bin, osicb, deceased_bool, newly_diagnosed)
+
+n_distinct(wes_tmb$Patient_ID)
+```
+
+```{r}
+
+fit_wes_pre_ND <- survfit(Surv(osicb, deceased_bool) ~ pre_TMB_bin,
+               data = wes_tmb %>% filter(newly_diagnosed))
+
+fit_wes_pre_R <- survfit(Surv(osicb, deceased_bool) ~ pre_TMB_bin,
+               data = wes_tmb %>% filter(!newly_diagnosed))
+
+p_pre_ND <- ggsurvplot(fit_wes_pre_ND,
+           pval = TRUE,
+           conf.int = TRUE,
+           xscale = 'd_y',
+           break.x.by = 365.25,
+           xlab = 'Time from ICB start (years)',
+           ylab = 'Fraction surviving',
+           ggtheme = theme_classic(),
+           palette = c('#7A6288', '#C7AFD5'),
+           legend = 'bottom',
+           legend.title = '',
+           legend.labs = c('TMB above median', 'TMB below median'),
+           title = paste0('Newly diagnosed exome cohort\n(n = ',
+                          wes_tmb %>% filter(newly_diagnosed) %>% dim %>% .[1],
+                          ')')
+           ) %++%
+  guides(color = guide_legend(nrow = 2))
+
+p_pre_R <- ggsurvplot(fit_wes_pre_R,
+           pval = TRUE,
+           conf.int = TRUE,
+           xscale = 'd_y',
+           break.x.by = 365.25,
+           xlab = 'Time from ICB start (years)',
+           ylab = 'Fraction surviving',
+           ggtheme = theme_classic(),
+           palette = c('#588556', '#A5D2A2'),
+           legend = 'bottom',
+           legend.title = '',
+           legend.labs = c('TMB above median', 'TMB below median'),
+           title = paste0('Recurrent exome cohort\n(n = ',
+                          wes_tmb %>% filter(!newly_diagnosed) %>% dim %>% .[1],
+                          ')')
+           ) %++%
+  guides(color = guide_legend(nrow = 2))
+
+p_combined <- ggarrange(p_pre_ND$plot, p_pre_R$plot,
+                        common.legend = FALSE)
+
+p_combined
+
+```
+
+# Combining WES and OncoPanel
+Pre-ICB overall TMB only; we will not stratify by truncal/subclonal status for
+this comparison.
+```{r}
+combined_tmb <- oncopanel_latest_pre_tmb %>% 
+  full_join(wes_tmb, by = c('participant_id_legacy' = 'Patient_ID',
+                            'deceased_bool' = 'deceased_bool',
+                            'newly_diagnosed' = 'newly_diagnosed',
+                            'osicb' = 'osicb')) %>%
+  group_by(newly_diagnosed) %>% 
+  mutate(TMB_harmonized = ifelse(is.na(MUTATIONAL_BURDEN), pre_TMB, MUTATIONAL_BURDEN),
+         median_TMB = median(TMB_harmonized),
+         TMB_harmonized_bin = factor(ifelse(TMB_harmonized >= median_TMB, 'TMB above median', 'TMB below median'), levels = c('TMB above median', 'TMB below median'))) %>% 
+  ungroup
+
+#combined_tmb %>% write_delim('../../../results/2024-06-26_tmb/combined_tmb.tsv',
+#                             delim = '\t')
+
+p_compare_1 <- ggscatter(combined_tmb %>% drop_na,
+          x = 'MUTATIONAL_BURDEN',
+          y = 'pre_TMB',
+          add = 'reg.line',
+          xlab = 'OncoPanel TMB',
+          ylab = 'Exome TMB',
+          conf.int = TRUE,
+          title = paste0('All patients with pre-ICB\nOncoPanel and WES\n(n = ',
+                         combined_tmb %>% drop_na %>% dim %>% .[1],
+                         ')')) +
+  stat_cor(method = 'spearman', cor.coef.name = 'rho') +
+  geom_abline(aes(slope = 1, intercept = 0, color = 'y = x')) +
+  scale_color_manual(values = 'red') +
+  labs(colour = '') +
+  coord_fixed()
+
+p_compare_2 <- ggscatter(combined_tmb %>% drop_na %>% filter(pre_TMB < 60),
+          x = 'MUTATIONAL_BURDEN',
+          y = 'pre_TMB',
+          add = 'reg.line',
+          xlab = 'OncoPanel TMB',
+          ylab = 'Exome TMB',
+          conf.int = TRUE,
+          title = paste0('Patients with\npre-ICB exome TMB < 60 mut/Mb\n(n = ',
+                         combined_tmb %>% drop_na %>% filter(pre_TMB < 60) %>% dim %>% .[1],
+                         ')')) +
+  stat_cor(method = 'spearman', cor.coef.name = 'rho') +
+  geom_abline(aes(slope = 1, intercept = 0, color = 'y = x')) +
+  scale_color_manual(values = 'red') +
+  labs(colour = '') +
+  coord_fixed()
+
+p_compare <- ggarrange(p_compare_1, p_compare_2,
+                       common.legend = TRUE,
+                       legend = 'bottom')
+p_compare
+
+```
+
+```{r}
+fit_harmonized_ND <- survfit(Surv(osicb, deceased_bool) ~ TMB_harmonized_bin,
+               data = combined_tmb %>% filter(newly_diagnosed))
+fit_harmonized_R <- survfit(Surv(osicb, deceased_bool) ~ TMB_harmonized_bin,
+               data = combined_tmb %>% filter(!newly_diagnosed))
+
+ND_title <- paste0('Newly diagnosed cohort\nmedian TMB = ',
+                   combined_tmb %>% filter(newly_diagnosed) %>% pull(median_TMB) %>% unique %>% round(., 1),
+                   ' mut/Mb')
+
+R_title <- paste0('Recurrent cohort\nmedian TMB = ',
+                  combined_tmb %>% filter(!newly_diagnosed) %>% pull(median_TMB) %>% unique %>% round(., 1),
+                  ' mut/Mb')
+
+p_harmonized_ND <- ggsurvplot(fit_harmonized_ND,
+           pval = TRUE,
+           conf.int = TRUE,
+           xscale = 'd_y',
+           break.x.by = 365.25,
+           xlab = 'Time from ICB start (years)',
+           ylab = 'Fraction surviving',
+           pval.coord = c(1000, 0.6),
+           ggtheme = theme_classic(),
+           palette = c('#7A6288', '#C7AFD5'),
+           legend = 'bottom',
+           legend.title = '',
+           legend.labs = c('TMB above median', 'TMB below median'),
+           title = ND_title
+           ) %++%
+  guides(color = guide_legend(nrow = 2))
+
+p_harmonized_R <- ggsurvplot(fit_harmonized_R,
+           pval = TRUE,
+           conf.int = TRUE,
+           xscale = 'd_y',
+           break.x.by = 365.25,
+           xlab = 'Time from ICB start (years)',
+           ylab = 'Fraction surviving',
+           pval.coord = c(1000, 0.6),
+           ggtheme = theme_classic(),
+           palette = c('#588556', '#A5D2A2'),
+           legend = 'bottom',
+           legend.title = '',
+           legend.labs = c('TMB above median', 'TMB below median'),
+           title = R_title
+           ) %++%
+  guides(color = guide_legend(nrow = 2))
+
+p_combined <- ggarrange(p_harmonized_ND$plot, p_harmonized_R$plot,
+                        common.legend = FALSE)
+
+p_combined
+
+```
