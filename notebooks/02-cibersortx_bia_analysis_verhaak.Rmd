@@ -1,0 +1,409 @@
+---
+title: "CIBERSORTx and MHC expression analysis"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(readxl)
+library(survival)
+```
+
+# Load CIBERSORTx and Verhaak subtype data
+```{r}
+cibersort <- read_delim('../data/combined_cibersortx_output.txt', 
+                       delim = '\t', show_col_types = FALSE)
+cibersort_icb <- cibersort %>% 
+  filter(str_detect(Mixture, 'GLSS.|TCGA.', negate = TRUE))
+cibersort_glass <- cibersort %>% 
+  filter(str_detect(Mixture, 'GLSS.|TCGA.'))
+
+# ICB
+verhaak_icb <- read_excel('../data/icb_ssgsea_verhaak.xlsx', 
+                          skip = 1)
+mhc_icb <- read_delim('../data/icb_ssgsea_mhc.tsv', 
+                      delim = '\t', show_col_types = FALSE)
+
+pt_icb <- read_delim('../data/participant_cohort_sheet.tsv',
+                 delim = '\t', show_col_types = FALSE)
+
+sx_icb <- read_delim('../data/sample_cohort_sheet.tsv',
+                 delim = '\t', show_col_types = FALSE)
+
+# GLASS
+pt_glass <- read_delim('../data/glass_clinical_cases_table.tsv',
+                       delim = '\t', show_col_types = FALSE)
+
+sx_glass <- read_delim('../data/glass_clinical_surgeries_table.tsv',
+                       delim = '\t', show_col_types = FALSE)
+
+primary_sx_glass <- read_delim('../data/glass_primary_rnaseq_counts.tsv', 
+                               delim = '\t', show_col_types = FALSE) %>% 
+  select(-Name, -Description) %>%
+  names %>% 
+  as_tibble_col(column_name = 'rna_barcode') %>% 
+  mutate(setting = 'Newly-diagnosed')
+
+recurrent_sx_glass <- read_delim('../data/glass_rec_rnaseq_counts.tsv', 
+                               delim = '\t', show_col_types = FALSE) %>% 
+  select(-Name, -Description) %>%
+  names %>% 
+  as_tibble_col(column_name = 'rna_barcode') %>% 
+  mutate(setting = 'Recurrent')
+```
+
+# Create a tidy data frame for plotting
+```{r}
+glass <- bind_rows(primary_sx_glass, recurrent_sx_glass) %>% 
+  mutate(cohort = 'GLASS') %>% 
+  mutate(case_barcode = substr(rna_barcode, 1, 12),
+         sample_barcode = substr(rna_barcode, 1, 15)) %>%
+  mutate(case_barcode = gsub('\\.', '-', case_barcode),
+         sample_barcode = gsub('\\.', '-', sample_barcode)) %>%
+  left_join(pt_glass %>% select(case_barcode, case_overall_survival_mo, case_vital_status), by = 'case_barcode') %>%
+  left_join(sx_glass %>% select(sample_barcode, surgical_interval_mo, mgmt_methylation), by = 'sample_barcode') %>% 
+  left_join(cibersort_glass, by = c('rna_barcode' = 'Mixture')) %>% 
+  mutate(os = ifelse(str_equal(setting, 'Newly-diagnosed'), case_overall_survival_mo, case_overall_survival_mo - surgical_interval_mo)) %>% 
+  select(-sample_barcode, -case_overall_survival_mo, -surgical_interval_mo) %>% 
+  rename(mgmt_status = mgmt_methylation,
+         vital_status = case_vital_status)
+
+icb <- cibersort_icb %>% 
+  mutate(cohort = 'ICB') %>% 
+  left_join(sx_icb %>% select(sample_id, participant_id, pre_post), by = c('Mixture' = 'sample_id')) %>% 
+  filter(str_equal(pre_post, 'Pre')) %>% 
+  select(-pre_post) %>% 
+  left_join(pt_icb %>% select(participant_id, osicb, `ICB for Newly diagnosed`, `MGMT methylated Y/N`, Deceased), by = 'participant_id') %>% 
+  mutate(osicb = osicb / 30.4375) %>% 
+  rename(rna_barcode = Mixture, os = osicb, setting = `ICB for Newly diagnosed`,
+         mgmt_status = `MGMT methylated Y/N`,
+         case_barcode = participant_id,
+         vital_status = Deceased)
+
+drop <- c('P-value', 'Correlation', 'RMSE', 'Absolute score (sig.score)')
+cols <- names(cibersort_icb)[-1]
+cols <- cols[!cols %in% drop]
+
+tidy <- bind_rows(glass, icb) %>% 
+  mutate(surv_group = case_when(
+          str_equal(setting, 'Newly-diagnosed') & (os >= 18) ~ 'LTS',
+          str_equal(setting, 'Newly-diagnosed') & (os < 18) ~ 'STS',
+          str_equal(setting, 'Recurrent') & (os >= 12) ~ 'LTS',
+          str_equal(setting, 'Recurrent') & (os < 12) ~ 'STS',
+          TRUE ~ NA),
+        vital_status = ifelse(str_detect(vital_status, 'Deceased|dead'), 1, 0),
+        mgmt_status = case_when(
+          mgmt_status %in% c('M', 'Methylated', 'Partially') ~ 1,
+          mgmt_status %in% c('U', 'Unmethylated') ~ 0,
+          TRUE ~ NA
+        )) %>% 
+  mutate(plot_group = factor(paste(cohort, surv_group),
+                             levels = c('GLASS STS', 'GLASS LTS', 'ICB STS', 'ICB LTS'))) %>% 
+  pivot_longer(cols = all_of(cols),
+               names_to = 'cell_type',
+               values_to = 'score') %>% 
+  select(-all_of(drop))
+
+#tidy %>% write_delim('../../../results/2024-07-18_CIBERSORTx/tidy_analysis_data.tsv', delim = '\t')
+
+tidy %>% head
+
+tidy %>%
+  distinct(rna_barcode, cohort, setting, surv_group) %>% 
+  count(cohort, setting, surv_group)
+
+tidy %>% count(mgmt_status, vital_status)
+```
+
+# GLASS vs. ICBL cell type scores (sanity check)
+```{r}
+
+pdf(file = "../results/cohort_vs_cibersort.pdf", width=12, height=6)
+ggboxplot(tidy %>% mutate(cohort_setting = paste(cohort, substr(setting,1,3))), x = 'cohort_setting', y = 'score', facet.by = 'cell_type',
+          scales = 'free_y', add = 'jitter') +
+  theme_classic(base_size = 12) +
+  theme(strip.background = element_blank()) +
+  stat_compare_means(label.y.npc = 0.9, label.x.npc = 0.66, size=2) +
+  rotate_x_text(45)
+
+dev.off()
+```
+
+# GLASS vs. ICB, LTS vs. STS: cell type scores
+```{r}
+
+pdf(file="../results/glass_vs_icb_cibersort.pdf", width=12, height=8)
+ggboxplot(tidy, x = 'plot_group', y = 'score', facet.by = 'cell_type',
+          scales = 'free_y', add = 'jitter') +
+  theme_classic(base_size = 12) +
+  theme(strip.background = element_blank()) +
+  stat_compare_means(comparisons = list(c(1,2), c(3,4)),
+                     label = 'p.signif', step.increase = 0, 
+                     label.y.npc = 0.8, vjust=-0.2) +
+  rotate_x_text(45)
+
+dev.off()
+```
+
+# ICB: Cell type score vs. Verhaak mesenchymal and proneural scores
+```{r}
+
+cibersort_verhaak <- cibersort_icb %>% 
+  left_join(verhaak_icb, by = c('Mixture' = 'sample_id')) %>%
+  mutate(across(starts_with('VERHAAK_GLIOBLASTOMA'), ~ as.numeric(scale(.)))) %>% 
+  select(-`Plasma B`, -all_of(drop), -participant_id, -verhaak_subtype,
+         -VERHAAK_GLIOBLASTOMA_NEURAL, -VERHAAK_GLIOBLASTOMA_CLASSICAL) %>% 
+  pivot_longer(cols = 2:14, names_to = 'cell_type', values_to = 'cell_score') %>% 
+  pivot_longer(cols = 2:3, names_to = 'verhaak_subtype', values_to = 'verhaak_score')
+
+cibersort_verhaak$cell_type <- replace(cibersort_verhaak$cell_type, 
+                                       cibersort_verhaak$cell_type == "Regulatory T cells", 
+                                       "Reg. T cells")
+
+pdf(file="../data/icb_cibersort_vs_subtype.pdf", width=8, height=12)
+ggscatter(
+  cibersort_verhaak, x = 'verhaak_score', y = 'cell_score',
+  facet.by = c('cell_type', 'verhaak_subtype'),
+  add = 'reg.line',
+  conf.int = TRUE,
+  cor.coef = TRUE,
+  cor.method = 'spearman',
+  scales = 'free_y'
+) + theme_bw()
+dev.off()
+```
+
+
+## Correlations
+```{r}
+cibersort_verhaak_corr <- cibersort_verhaak %>% 
+  group_by(cell_type, verhaak_subtype) %>% 
+  summarize(corr = cor(cell_score, verhaak_score, method = 'spearman'),
+            p = cor.test(cell_score, verhaak_score, method = 'spearman')$p.value) %>% 
+  ungroup %>% 
+  mutate(q = p.adjust(p, method = 'fdr'))
+```
+
+
+# ICB: Cell type score vs. MHC expression scores
+```{r}
+cibersort_mhc <- cibersort_icb %>% 
+  left_join(mhc_icb, by = c('Mixture' = 'sample_id')) %>%
+  mutate(across(starts_with('GOCC_'), ~ as.numeric(scale(.)))) %>% 
+  select(-`Plasma B`, -all_of(drop)) %>% 
+  pivot_longer(cols = 2:14, names_to = 'cell_type', values_to = 'cell_score') %>%
+  pivot_longer(cols = 2:4, names_to = 'mhc_signature', values_to = 'mhc_score')
+
+cibersort_mhc$cell_type <- replace(cibersort_mhc$cell_type, 
+                                   cibersort_mhc$cell_type == "Regulatory T cells", 
+                                   "Reg. T cells")
+cibersort_mhc$mhc_signature <- replace(cibersort_mhc$mhc_signature, 
+                                   cibersort_mhc$mhc_signature == "GOCC_MHC_CLASS_I_PROTEIN_COMPLEX", 
+                                   "MHC Class I")
+cibersort_mhc$mhc_signature <- replace(cibersort_mhc$mhc_signature, 
+                                   cibersort_mhc$mhc_signature == "GOCC_MHC_CLASS_II_PROTEIN_COMPLEX", 
+                                   "MHC Class II")
+cibersort_mhc$mhc_signature <- replace(cibersort_mhc$mhc_signature, 
+                                   cibersort_mhc$mhc_signature == "GOCC_MHC_PROTEIN_COMPLEX", 
+                                   "MHC Combined")
+
+pdf(file="../results/icb_cibersort_vs_mhc.pdf", width=8, height=12)
+ggscatter(
+  cibersort_mhc, x = 'mhc_score', y = 'cell_score',
+  facet.by = c('cell_type', 'mhc_signature'),
+  add = 'reg.line',
+  conf.int = TRUE,
+  cor.coef = TRUE,
+  cor.method = 'spearman',
+  scales = 'free_y',
+  cor.coef.size = 3,
+  size=1.0
+) + theme_bw()
+
+dev.off()
+```
+
+## Correlations
+Just for the GOCC_MHC_PROTEIN_COMPLEX combined signature
+```{r}
+cibersort_mhc_corr <- cibersort_mhc %>% 
+  filter(str_equal(mhc_signature, 'MHC Combined')) %>% 
+  group_by(cell_type, mhc_signature) %>% 
+  summarize(corr = cor(cell_score, mhc_score, method = 'spearman'),
+            p = cor.test(cell_score, mhc_score, method = 'spearman')$p.value) %>% 
+  ungroup %>% 
+  mutate(q = p.adjust(p, method = 'fdr'))
+```
+
+# ICB: Verhaak mesenchymal and proneural scores vs. MHC expression scores
+```{r}
+verhaak_mhc <- verhaak_icb %>% 
+  left_join(mhc_icb, by = c('sample_id')) %>%
+  mutate(across(starts_with('GOCC_') | starts_with('VERHAAK_GLIOBLASTOMA'), ~ as.numeric(scale(.)))) %>% 
+  select(-participant_id, -verhaak_subtype) %>% # ,
+        #-VERHAAK_GLIOBLASTOMA_NEURAL, -VERHAAK_GLIOBLASTOMA_CLASSICAL) %>% 
+  pivot_longer(cols = 2:5, names_to = 'verhaak_subtype', values_to = 'verhaak_score') %>% 
+  pivot_longer(cols = 2:4, names_to = 'mhc_signature', values_to = 'mhc_score')
+
+verhaak_mhc$mhc_signature <- replace(verhaak_mhc$mhc_signature, 
+                                   verhaak_mhc$mhc_signature == "GOCC_MHC_CLASS_I_PROTEIN_COMPLEX", 
+                                   "MHC Class I")
+verhaak_mhc$mhc_signature <- replace(verhaak_mhc$mhc_signature, 
+                                   verhaak_mhc$mhc_signature == "GOCC_MHC_CLASS_II_PROTEIN_COMPLEX", 
+                                   "MHC Class II")
+verhaak_mhc$mhc_signature <- replace(verhaak_mhc$mhc_signature, 
+                                   verhaak_mhc$mhc_signature == "GOCC_MHC_PROTEIN_COMPLEX", 
+                                   "MHC Combined")
+verhaak_mhc$verhaak_subtype <- sapply(verhaak_mhc$verhaak_subtype, function(x){ paste("GBM", tail(strsplit(x, "_")[[1]], n=1)) } )
+verhaak_mhc$verhaak_subtype <- factor(verhaak_mhc$verhaak_subtype, levels=c("GBM MESENCHYMAL", 
+                                                                            "GBM CLASSICAL", 
+                                                                            "GBM NEURAL",
+                                                                            "GBM PRONEURAL"))
+
+#verhaak_mhc$verhaak_subtype
+  #replace(verhaak_mhc$verhaak_subtype, 
+  #                                     verhaak_mhc$verhaak_subtype == "VERHAAK_GLIOBLASTOMA", 
+  #                                    "MHC Combined")
+
+pdf("../results/icb_verhaak_vs_mhc.pdf")
+ggscatter(
+  verhaak_mhc, x = 'verhaak_score', y = 'mhc_score',
+  facet.by = c('mhc_signature', 'verhaak_subtype'),
+  add = 'reg.line',
+  conf.int = TRUE,
+  cor.coef = TRUE,
+  cor.coef.size = 3,
+  cor.method = 'spearman',
+  scales = 'free_y',
+  cor.coeff.args = list(label.y.npc = 0.1)
+) + theme_bw()
+dev.off()
+```
+
+## Correlations
+```{r}
+verhaak_mhc_corr <- verhaak_mhc %>% 
+  filter(str_equal(mhc_signature, 'MHC Combined')) %>% 
+  group_by(verhaak_subtype, mhc_signature) %>% 
+  summarize(corr = cor(verhaak_score, mhc_score, method = 'spearman'),
+            p = cor.test(verhaak_score, mhc_score, method = 'spearman')$p.value) %>% 
+  ungroup %>% 
+  mutate(q = p.adjust(p, method = 'fdr'))
+```
+
+# Cox regressions
+Account for newly diagnosed vs. recurrent and MGMT status
+
+## GLASS: all cell types
+```{r}
+cibersort_surv_glass <- glass %>% 
+  select(-rna_barcode, -cohort, -all_of(drop)) %>% 
+  group_by(case_barcode) %>% 
+  mutate_at(cols, mean) %>% 
+  ungroup %>% 
+  distinct(case_barcode, .keep_all = TRUE) %>% 
+  mutate_at(cols, ~ as.numeric(scale(.))) %>% 
+  mutate(mgmt_status = ifelse(str_equal(mgmt_status, 'U'), 0, 1), # group partially with methylated
+         vital_status = str_equal(vital_status, 'dead'),
+         os = os * 30.4375) %>% 
+  pivot_longer(cols = all_of(cols),
+               names_to = 'cell_type',
+               values_to = 'score') 
+
+cox_results_glass <- cibersort_surv_glass %>% 
+  group_by(cell_type) %>% 
+  nest() %>% 
+  mutate(cox_model = map(data, ~coxph(Surv(os, vital_status) ~ setting + mgmt_status + score,
+                                       data = .x)),
+         summary = map(cox_model, broom::tidy)) %>% 
+  unnest(summary) %>% 
+  ungroup %>% 
+  filter(str_equal(term, 'score')) %>% 
+  mutate(HR = exp(estimate),
+         q = p.adjust(p.value, method = 'fdr'))
+```
+
+## ICB: all cell types
+```{r}
+cibersort_surv_icb <- icb %>% 
+  select(-rna_barcode, -cohort, -all_of(drop)) %>% 
+  group_by(case_barcode) %>% 
+  mutate_at(cols, mean) %>% 
+  ungroup %>% 
+  distinct(case_barcode, .keep_all = TRUE) %>% 
+  mutate_at(cols, ~ as.numeric(scale(.))) %>% 
+  mutate(mgmt_status = ifelse(str_equal(mgmt_status, 'Unmethylated'), 0, 1), # group partially with methylated
+         vital_status = str_equal(vital_status, 'Deceased'),
+         os = os * 30.4375) %>% 
+  pivot_longer(cols = all_of(cols),
+               names_to = 'cell_type',
+               values_to = 'score') 
+  
+cox_results_icb <- cibersort_surv_icb %>% 
+  group_by(cell_type) %>% 
+  nest() %>% 
+  mutate(cox_model = map(data, ~coxph(Surv(os, vital_status) ~ setting + mgmt_status + score,
+                                       data = .x)),
+         summary = map(cox_model, broom::tidy)) %>% 
+  unnest(summary) %>% 
+  ungroup %>% 
+  filter(str_equal(term, 'score')) %>% 
+  mutate(HR = exp(estimate),
+         q = p.adjust(p.value, method = 'fdr'))
+```
+
+## Compare ICB and GLASS scores
+```{r}
+cox_results <- cox_results_glass %>% 
+  left_join(cox_results_icb, by = 'cell_type',
+            suffix = c('_GLASS', '_ICB'))
+
+ggscatter(cox_results, x = 'HR_ICB', y = 'HR_GLASS',
+          label = 'cell_type', repel = TRUE) +
+  coord_fixed() +
+  # coord_fixed(xlim = c(0,1), ylim = c(0,1)) +
+  geom_vline(xintercept = 1, linetype = 'longdash') +
+  geom_hline(yintercept = 1, linetype = 'longdash')
+```
+
+## By MHC expression
+```{r}
+mhc_surv <- mhc_icb %>% 
+  inner_join(icb, by = c('sample_id' = 'rna_barcode')) %>% 
+  mutate(across(starts_with('GOCC_'), ~ as.numeric(scale(.)))) %>% 
+  select(all_of(names(mhc_icb)), case_barcode, setting, mgmt_status, os, vital_status) %>% 
+  group_by(case_barcode) %>% 
+  mutate(mhc = mean(GOCC_MHC_PROTEIN_COMPLEX),
+         mgmt_status = ifelse(str_equal(mgmt_status, 'Unmethylated'), 0, 1),
+         vital_status = str_equal(vital_status, 'Deceased'),
+         os = os * 30.4375) %>% # group partially with methylated
+  ungroup %>% 
+  select(-(1:4)) %>% 
+  distinct
+
+cox_model <- coxph(Surv(os, vital_status) ~ setting + mgmt_status + mhc,
+                   data = mhc_surv)
+
+summary(cox_model)
+
+# include these results in a small table
+```
+
+# ICB: MHC pre-post
+```{r}
+mhc_prepost <- mhc_icb %>%
+  left_join(sx_icb, by = 'sample_id') %>% 
+  select(participant_id, pre_post, GOCC_MHC_PROTEIN_COMPLEX) %>% 
+  group_by(participant_id, pre_post) %>% 
+  summarize(mhc = mean(GOCC_MHC_PROTEIN_COMPLEX),
+            .groups = 'drop') %>% 
+  pivot_wider(names_from = 'pre_post',
+              values_from = 'mhc') %>% 
+  drop_na
+
+ggpaired(mhc_prepost, cond1 = 'Pre', cond2 = 'Post') +
+  stat_compare_means(paired = TRUE)
+```
+
+
