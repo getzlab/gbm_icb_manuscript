@@ -1,4 +1,4 @@
-# ghannam\_gbm\_icb\_manuscript
+# gbm\_icb\_manuscript
 
 Code for generating figures in the Glioblastoma ICB manuscript of Ghannam et al.:
 
