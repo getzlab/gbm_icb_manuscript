@@ -3,6 +3,10 @@ title: "TMB: truncal and subclonal; associations with OS"
 output: html_notebook
 ---
 
+Run this notebook to generate
+* Figure 1e
+* Extended Data Figure 1g-i
+
 This notebook tests associations of pre-ICB TMB with overall survival from ICB start.
 - OncoPanel data: assay-reported non-syn TMB
 - WES data: truncal non-syn TMB and total non-syn TMB
