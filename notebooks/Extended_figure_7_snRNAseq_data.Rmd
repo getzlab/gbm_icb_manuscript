@@ -1,0 +1,1025 @@
+---
+title: "Extended_figure_7_snRNAseq_data"
+output: html_document
+date: "2025-10-15"
+---
+
+```{r setup, include=FALSE}
+
+# load libraries
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(ggh4x)
+library(scales)
+library(dendextend)
+library(patchwork)
+
+
+# load data
+metadata_ICB <- readRDS(file = "results/8_1_post_QC_analysis/nuc_seq/merged/sig_scores/metadata_ICB.rds")
+metadata_ICB %>% dim() # 666948  15
+
+project_metadata <- readRDS(file = "backup_temp_data/project_metadata_ICB.rds")
+
+
+# generate ggplot themes
+base_theme <- function() {
+  
+  theme_classic(base_size = 25) + 
+    theme(plot.title = element_text(face = "bold"), plot.title.position = "plot", plot.subtitle = element_text(lineheight = 1.1),
+          axis.line = element_blank()
+    )
+  
+}
+
+umap_theme <- function() {
+  
+  base_theme() +
+    theme(axis.ticks = element_blank(), axis.text = element_blank(),
+          axis.title.x = element_text(hjust = 0.1), axis.title.y = element_text(hjust = 0.1), axis.title = element_text(size = 14)
+    )
+  
+}
+
+default_theme <- function() {
+  
+  theme_classic(base_size = 25) + 
+    theme(plot.title = element_text(face = "bold"), plot.title.position = "plot", plot.subtitle = element_text(lineheight = 1.1),
+          strip.text = element_text(size = 20),
+          panel.grid.minor.y = element_line(linewidth = 0.25, linetype = 1),
+          panel.grid.major.y = element_line(linewidth = 0.5, linetype = 1),
+    )
+  
+}
+
+default_theme_border <- function() {
+  
+  default_theme() + 
+    theme(panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank())
+  
+}
+
+default_theme_xrot_90 <- function() {
+  
+  default_theme() +
+    theme(axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1))
+}
+
+default_theme_xrot_90_border <- function() {
+  
+  default_theme() +
+    theme(axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank())
+}
+
+
+# load color palettes
+HEATMAP_LOW_VALUE_C <- "#3C5488"
+HEATMAP_HIGH_VALUE_C <- "#E64B35"
+
+SURVIVAL_LS_C <- "#D494B9" 
+SURVIVAL_SS_C <- "#32B18F" 
+
+RX_UNTREATED_C <- "#4A6274"
+RX_TREATED_C <- "#E294AF" 
+
+RX_PRE_ICB_C <- "#4089B2"
+RX_POST_ICB_C <- "#DC8848"
+
+
+VERHAAK_SUBTYPE_MESENCHYMAL_C <- "#D62727"
+VERHAAK_SUBTYPE_CLASSICAL_C <- "#F39354"
+VERHAAK_SUBTYPE_NEURAL_C <- "#96A6AF"
+VERHAAK_SUBTYPE_PRONEURAL_C <- "#1F73AF"
+
+
+GBM_STATE_AC_C <- "#FFCC80"
+GBM_STATE_GPC_C <- "#B39DDB"
+GBM_STATE_MES_C <- "#EF9A9A"
+GBM_STATE_NPC_C <- "#B0BEC5"
+GBM_STATE_OPC_C <- "#90CAF9"
+GBM_STATE_ND_C <- "white"
+
+CELL_TYPE_MALIGNANT_C <- "#C2185B"
+CELL_TYPE_OLIGODENDROCYTE_C <- "#FF6961"
+CELL_TYPE_MYELOID_C <- "#FFB480"
+CELL_TYPE_ASTROCYTES_C <- "#F8F38D"
+CELL_TYPE_NEURONS_C <- "#D4E157"
+CELL_TYPE_ENDOTHELIAL_C <- "#81C784"
+CELL_TYPE_PERICYTES_C <- "#42d6a4"
+CELL_TYPE_T_CELL_C <- "#59adf6"
+CELL_TYPE_NK_CELL_C <- "#9d94ff"
+
+
+# create utilities functions
+`%!in%` <- Negate(`%in%`)
+
+```
+
+
+
+```{r Ex.Fig.7a-malignant-cell-NMF-analysis}
+
+metadata_malignant <- metadata_ICB %>% dplyr::filter(malignant_group == "Malignant") %>% droplevels()
+metadata_malignant %>% dim() # 345094  15
+
+
+# run the job 'calculate_GBM_NMF_by_sample_fast.R' ...
+
+
+nmf_GBM_cells_per_sample_fast <- readRDS(file = "results/9_tumor_cells_analysis/nuc_seq/lenient/NMF_analysis/nmf_GBM_per_sample_multiple_ranks_fast_only_malignant.rds")
+
+
+QUANTILE_THRESHOLD <- 0.99
+
+NUMBER_OF_CLUSTERS <- 10 # 15  20  25
+MIN_SIGNATURES_PER_CLUSTER <- 5 # 4  2
+MINIMAL_FRACTION_ROBUST_GENES <- 0.4 # 0.5
+
+
+# (A.1) iterate over SAMPLES
+nmf_GBM_cells_per_sample_metaprograms <- 
+  map(seq_along(nmf_GBM_cells_per_sample_fast), function(nmf_sample_index) { 
+    
+    nmf_sample_results <- nmf_GBM_cells_per_sample_fast[[nmf_sample_index]]
+    sample_id <- names(nmf_GBM_cells_per_sample_fast)[nmf_sample_index]
+    
+    if(sample_id %in% c("122_Post-Vax_Tags_pilot")) { return(list()) }
+    
+    # (A.2) iterate over RANKS
+    nmf_sample_results_metaprograms <-
+      map(seq_along(nmf_sample_results), function(nmf_sample_rank_index) {
+        
+        nmf_sample_rank_results <- nmf_sample_results[[nmf_sample_rank_index]]
+        rank <- nmf_sample_rank_index + 3 # since the ranks are 4 to 9
+        
+        
+        # (B) calculate metaprograms by TOP PERCENTILE
+        nmf_sample_rank_results_metaprograms <- 
+          nmf_sample_rank_results$w %>% 
+            apply(2, function(nmf_results) {
+              
+              nmf_results_df <- 
+                nmf_results %>% 
+                as.data.frame() %>% 
+                magrittr::set_names(c("nmf_score")) %>% 
+                tibble::rownames_to_column(var = "gene_name")
+              
+              
+              quantile_threshold_score <- quantile(nmf_results_df$nmf_score, probs = QUANTILE_THRESHOLD) %>% as.numeric()
+              
+              nmf_results_df %>% 
+                dplyr::filter(nmf_score >= quantile_threshold_score) %>%
+                dplyr::arrange(-nmf_score) %>% 
+                dplyr::pull(gene_name)
+                
+              
+            }, simplify = FALSE) %>% 
+          magrittr::set_names(paste0(sample_id, ".", rank, ".", 1:length(.)))
+  
+        }) %>% unlist(recursive = FALSE)
+    
+
+    # (C) for each patient, CLUSTER together similar signatures
+    NUMBER_OF_CLUSTERS_DENDOGRAM <- 8
+    
+    nmf_sample_metaprograms_jaccard <-
+      outer(X = nmf_sample_results_metaprograms,
+            Y = nmf_sample_results_metaprograms,
+            FUN = Vectorize(scalop::jaccard))
+    
+    
+    hclust_sample  <- hclust(as.dist(1-nmf_sample_metaprograms_jaccard), method="average") # create an object of class hclust which is a list that describes the tree produced by the clustering process
+    hclust_sample  <- reorder(as.dendrogram(hclust_sample), colMeans(nmf_sample_metaprograms_jaccard)) # the leaves of the dendrogram are reordered so as to be in an order as consistent as possible with the weights
+    nmf_sample_metaprograms_jaccard <- nmf_sample_metaprograms_jaccard[order.dendrogram(hclust_sample), order.dendrogram(hclust_sample)] # Now re-order the original cor matrix
+
+    jaccard_matrix <- 
+      nmf_sample_metaprograms_jaccard %>% 
+      reshape2::melt() %>% 
+      ggplot() +
+      geom_tile(aes(x = Var1, y = Var2, fill=value)) +
+      scale_fill_gradient(low = "white", high = "red") +
+      theme_classic(base_size = 16) +
+      theme(plot.title = element_text(face = "bold"), plot.subtitle = element_text(lineheight = 1.1),
+            axis.text = element_blank(), axis.ticks = element_blank(),
+            plot.title.position = "plot")
+    
+    dend <- stats::as.dendrogram(hclust_sample) %>% set("branches_k_color", k = NUMBER_OF_CLUSTERS_DENDOGRAM) %>% as.ggdend()
+    
+    (ggplot(dend) + scale_x_discrete(expand = c(0,0)) + scale_y_continuous(expand = c(0,0))) / jaccard_matrix +
+      patchwork::plot_layout(heights = c(1,20), guides = "collect") +
+      patchwork::plot_annotation(title = paste0("CD4+ T-cells NMF results - clustering similar signatures (", sample_id, ")"), 
+                                 subtitle = "NMF was calculate by RcppML::nmf",
+                                 theme = theme_classic(base_size = 16) + 
+                                   theme(plot.title = element_text(face = "bold"), plot.subtitle = element_text(lineheight = 1.1),
+                                         axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1),
+                                         plot.title.position = "plot"))
+    
+    
+    # (D) create a summary of the signatures by cluster - move parameters outside
+    sample_signature_summary <- 
+      cutree(hclust_sample, k = NUMBER_OF_CLUSTERS) %>% 
+      as.data.frame() %>% 
+      `colnames<-`(c("hclust_cluster")) %>% 
+      tibble::rownames_to_column(var = "signature_id")
+    
+    sample_signatures_list <- 
+      sample_signature_summary %>% 
+        dplyr::group_by(hclust_cluster) %>% 
+        dplyr::summarise(count = n()) %>% 
+        dplyr::filter(count >= MIN_SIGNATURES_PER_CLUSTER) %>% 
+        pull(hclust_cluster) %>% 
+        map(function(hclust_cluster_id) {
+          
+          cluster_signature_ids <- 
+            sample_signature_summary %>% 
+            dplyr::filter(hclust_cluster == hclust_cluster_id) %>% 
+            dplyr::pull(signature_id)
+          
+          nmf_sample_results_metaprograms[cluster_signature_ids] %>% unlist() %>% as.character() %>% 
+            table() %>% as.data.frame() %>% 
+            `colnames<-`(c("gene_name", "count")) %>% 
+            dplyr::arrange(-count) %>%
+            dplyr::mutate(fraction = count/length(cluster_signature_ids)) %>% 
+            dplyr::filter(fraction > MINIMAL_FRACTION_ROBUST_GENES) %>% 
+            dplyr::pull(gene_name) %>% 
+            as.character()  
+            
+        }) 
+    
+    if(length(sample_signatures_list) == 0) {return(list()) } 
+    
+    sample_signatures_list %>% magrittr::set_names(paste0(sample_id, ".", 1:length(.)))
+  
+  })
+
+metaprograms_all <- nmf_GBM_cells_per_sample_metaprograms %>% unlist(recursive = FALSE)
+length(metaprograms_all) # 106
+
+metaprograms_all %>% names()
+
+
+
+# (E) for all patients, CLUSTER together similar signatures
+metaprograms_all_jaccard <-
+  outer(X = metaprograms_all,
+        Y = metaprograms_all,
+        FUN = Vectorize(scalop::jaccard))
+    
+    
+hclust_all  <- hclust(as.dist(1-metaprograms_all_jaccard), method="average") # create an object of class hclust which is a list that describes the tree produced by the clustering process
+hclust_all  <- reorder(as.dendrogram(hclust_all), colMeans(metaprograms_all_jaccard)) # the leaves of the dendrogram are reordered so as to be in an order as consistent as possible with the weights
+metaprograms_all_jaccard <- metaprograms_all_jaccard[order.dendrogram(hclust_all), order.dendrogram(hclust_all)] # Now re-order the original cor matrix
+
+MAX_JACCARD_VALUE_TRIM <- 0.5
+
+jaccard_all_matrix <- 
+  metaprograms_all_jaccard %>% 
+  reshape2::melt() %>% 
+  dplyr::mutate(value = case_when(Var1 == Var2 ~ NA, 
+                                  MAX_JACCARD_VALUE_TRIM < value ~ MAX_JACCARD_VALUE_TRIM,
+                                  .default = value)) %>% 
+  ggplot() +
+  geom_tile(aes(x = Var1, y = Var2, fill=value)) +
+  scale_fill_gradient(low = "white", high = HEATMAP_HIGH_VALUE_C,
+                      guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) +
+  theme_classic(base_size = 16) +
+  theme(panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank(),
+        plot.title = element_text(face = "bold"), plot.subtitle = element_text(lineheight = 1.1),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+        # axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1),
+        plot.title.position = "plot")
+# jaccard_all_matrix
+
+    
+NUMBER_OF_CLUSTERS_DENDOGRAM <- 15 # 15  20  25
+dend_all <- as.dendrogram(hclust_all) %>% set("branches_k_color", k = NUMBER_OF_CLUSTERS_DENDOGRAM) %>% as.ggdend()
+  
+
+# (F) add panels (Rx and Tumor_class)
+panel_data_summary <- 
+  rownames(metaprograms_all_jaccard) %>% 
+  str_split_fixed(pattern = "[.]", n = 2) %>% 
+  as.data.frame() %>% 
+  `colnames<-`(c("Sample_ID", "index"))
+
+rx_panel <-
+  panel_data_summary %>% 
+  dplyr::left_join((metadata_malignant %>% 
+                      dplyr::select(Rx, Sample_ID) %>% 
+                      unique()), by = "Sample_ID") %>% 
+  tibble::rowid_to_column(var = "order") %>% 
+  ggplot() +
+  geom_tile(aes(x=reorder(order, order), y = "Rx", fill = Rx), alpha = 0.8) +
+  scale_fill_manual(values = c(RX_UNTREATED_C, RX_TREATED_C)) +
+  scale_x_discrete(expand=c(0,0)) + scale_y_discrete(expand=c(0,0)) + 
+  labs(fill = "") +
+  guides(fill = guide_legend(byrow = TRUE)) +
+  default_theme_border() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title = element_blank(),
+        legend.key.spacing.y = unit(10,"pt"))
+
+
+# rx_panel / tumor_class_panel / (ggplot(dend_all) + scale_x_discrete(expand = c(0,0)) + scale_y_continuous(expand = c(0,0))) / jaccard_all_matrix +
+rx_panel / (ggplot(dend_all) + scale_x_discrete(expand = c(0,0)) + scale_y_continuous(expand = c(0,0))) / jaccard_all_matrix +
+  patchwork::plot_layout(heights = c(1,1,20), guides = "collect") +
+  patchwork::plot_annotation(title = paste0("Malignant cells - NMF results"), 
+                             subtitle = "NMF was calculate by RcppML::nmf",
+                             theme = default_theme())
+# ggsave(filename = paste0(FOLDER_PATH, "/NMF_analysis/", FOLDER_NAME, "/jaccard_nmf_all_patients_", NUMBER_OF_CLUSTERS_DENDOGRAM,".png"), width = 15, height = 15)
+
+
+
+# (F) create a summary of the signatures by cluster
+NUMBER_OF_CLUSTERS_MP <- 20  # 15  25  50 (25)
+MIN_SIGNATURES_PER_CLUSTER_MP <- 4 # 4
+MINIMAL_FRACTION_ROBUST_GENES_MP <- 0.3 # 0.3
+
+
+NUMBER_OF_CLUSTERS_MP <- 20  # 15  25  50 (25)
+MINIMAL_FRACTION_ROBUST_GENES_MP <- 0.3 # 0.3
+
+
+FOLDER_NAME_2 <- paste0(NUMBER_OF_CLUSTERS_MP, "_", MIN_SIGNATURES_PER_CLUSTER_MP, "_", MINIMAL_FRACTION_ROBUST_GENES_MP)
+
+
+signatures_all_summary <- 
+  cutree(hclust_all, k = NUMBER_OF_CLUSTERS_MP) %>% 
+  as.data.frame() %>% 
+  `colnames<-`(c("hclust_cluster")) %>% 
+  tibble::rownames_to_column(var = "signature_id")
+    
+GBM_nmf_fast_metaprograms <- 
+  signatures_all_summary %>% 
+  dplyr::group_by(hclust_cluster) %>% 
+  dplyr::summarise(count = n()) %>% 
+  dplyr::filter(count >= MIN_SIGNATURES_PER_CLUSTER_MP) %>% 
+  pull(hclust_cluster) %>% 
+  map(function(hclust_cluster_id) {
+    
+    # hclust_cluster_id <- 1
+    
+    cluster_signature_ids <- 
+      signatures_all_summary %>% 
+      dplyr::filter(hclust_cluster == hclust_cluster_id) %>% 
+      dplyr::pull(signature_id)
+    
+    metaprograms_all[cluster_signature_ids] %>% unlist() %>% as.character() %>% 
+      table() %>% as.data.frame() %>% 
+      `colnames<-`(c("gene_name", "count")) %>% 
+      dplyr::arrange(-count) %>%
+      dplyr::mutate(fraction = count/length(cluster_signature_ids)) %>% 
+      dplyr::filter(fraction > MINIMAL_FRACTION_ROBUST_GENES_MP) %>% 
+      dplyr::pull(gene_name) %>% 
+      as.character()  
+  })
+
+MIN_GENES_PER_SIGNATURE <- 3
+
+# look at signatures with more than MIN_GENES_PER_SIGNATURE genes
+GBM_nmf_fast_metaprograms <- GBM_nmf_fast_metaprograms[lengths(GBM_nmf_fast_metaprograms) > MIN_GENES_PER_SIGNATURE]
+GBM_nmf_fast_metaprograms
+
+# GBM_nmf_fast_malignant_metaprograms <- GBM_nmf_fast_metaprograms
+
+
+
+MIN_JACCARD_SCORE_THRESHOLD <- 0.1
+
+names(GBM_nmf_fast_metaprograms) <- paste0("MP_", 1:length(GBM_nmf_fast_metaprograms)) # set names
+
+
+
+# (G) compare with external signatures
+Spitzer_malignant_signatures <- read.csv2(file = "data/external/Spitzer_malignant_MPs_published.csv", sep = ",", header = TRUE)
+
+base::outer(X = Spitzer_malignant_signatures %>% as.list(),
+            Y = GBM_nmf_fast_metaprograms,
+            FUN = Vectorize(scalop::jaccard)) %>% 
+  reshape2::melt() %>% 
+  ggplot() + 
+  geom_tile(aes(x = Var1, y = reorder(Var2, desc(Var2)), fill = value), ) + coord_equal() +
+  scale_fill_gradient2(low = HEATMAP_LOW_VALUE_C, mid = "white", high = HEATMAP_HIGH_VALUE_C,
+                       guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) +
+  labs(x = "Spitzer et al. (Nature Genetics, 2025)", y = "Current study", fill="Jaccard") +
+  default_theme_xrot_90_border() +
+  theme(plot.title = element_text(size = 20), 
+        axis.title = element_text(size = 20), axis.text = element_text(size = 16))
+
+
+
+
+
+
+GBM_nmf_programs_by_metaprograms <- split(signatures_all_summary$signature_id, signatures_all_summary$hclust_cluster)
+GBM_nmf_programs_by_metaprograms <- GBM_nmf_programs_by_metaprograms[MIN_SIGNATURES_PER_CLUSTER_MP <= lengths(GBM_nmf_programs_by_metaprograms)]
+names(GBM_nmf_programs_by_metaprograms) <- c("ND.1", "ND.2", "Cycling", "AC-like", "OPC-like", "NPC-like", "GPC-like", "ND.3", "MES-like", "ND.4")
+
+
+GBM_nmf_programs_by_metaprograms %>% length() # 10
+names(GBM_nmf_programs_by_metaprograms) <- names(GBM_nmf_fast_metaprograms)
+
+
+GBM_nmf_programs_by_metaprograms_df <-
+  seq_along(GBM_nmf_programs_by_metaprograms) %>% 
+  map(function(index) { 
+  
+    data.frame(MP_name = names(GBM_nmf_programs_by_metaprograms)[index],
+               program_id = GBM_nmf_programs_by_metaprograms[[index]])  
+    
+  }) %>% do.call(rbind, .)
+
+
+GBM_nmf_metaprograms_index_ranges <-
+  data.frame(program_id = rownames(metaprograms_all_jaccard)) %>% 
+  tibble::rowid_to_column(var = "program_order") %>% 
+  dplyr::left_join(GBM_nmf_programs_by_metaprograms_df, by = "program_id") %>% 
+  dplyr::filter(!is.na(MP_name)) %>% 
+  dplyr::group_by(MP_name) %>% 
+  dplyr::summarise(min_program_index = min(program_order),
+                   max_program_index = max(program_order))
+
+
+GBM_nmf_metaprograms_index_ranges %>% 
+  dplyr::arrange(min_program_index)
+                   
+
+boxfunction <- function(MP_name, min_program_index, max_program_index) {
+  annotate(geom = "rect", xmin = 111-min_program_index+1.5, xmax = 111-max_program_index+0.5, ymin = min_program_index-0.5, ymax = max_program_index+0.5, 
+           alpha = 0, linewidth = 0.8, color = "grey25")
+}
+
+
+boxfunction <- function(MP_name, min_program_index, max_program_index) {
+  annotate(geom = "rect", xmin = 106-min_program_index+1.5, xmax = 106-max_program_index+0.5, ymin = min_program_index-0.5, ymax = max_program_index+0.5, 
+           alpha = 0, linewidth = 0.8, color = "grey25")
+}
+
+
+
+MAX_JACCARD_VALUE_TRIM <- 0.4
+
+jaccard_all_matrix <-
+  metaprograms_all_jaccard %>% 
+  reshape2::melt() %>% 
+  dplyr::mutate(value = case_when(Var1 == Var2 ~ NA, 
+                                  MAX_JACCARD_VALUE_TRIM < value ~ MAX_JACCARD_VALUE_TRIM,
+                                  .default = value)) %>% 
+  ggplot() +
+  geom_tile(aes(x = fct_rev(Var1), y = Var2, fill=value)) +
+  purrr::pmap(GBM_nmf_metaprograms_index_ranges, boxfunction) +
+  scale_fill_gradient(low = "white", high = HEATMAP_HIGH_VALUE_C,
+                      guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) +
+  labs(x = "Malignant NMF programs", y = "Malignant NMF programs", fill = "Jaccard score") + 
+  theme_classic(base_size = 16) +
+  theme(panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank(),
+        plot.title = element_text(face = "bold"), plot.subtitle = element_text(lineheight = 1.1),
+        axis.text = element_blank(), axis.ticks = element_blank(),
+        # axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1),
+        plot.title.position = "plot")
+
+
+jaccard_all_matrix
+
+
+project_metadata_GBM_verhaak_subtypes <- readRDS(file = "results/8_1_post_QC_analysis/nuc_seq/project_metadata_GBM_verhaak_subtypes.rds")
+
+
+panel_data_summary <- 
+  rownames(metaprograms_all_jaccard) %>% 
+  str_split_fixed(pattern = "[.]", n = 2) %>% 
+  as.data.frame() %>% 
+  `colnames<-`(c("Sample_ID", "index"))
+
+
+rx_panel <-
+  panel_data_summary %>% 
+  dplyr::left_join((metadata_ICB %>% 
+                      dplyr::select(Rx, Patient_ID, Sample_ID) %>% unique()), by = "Sample_ID") %>% 
+  tibble::rowid_to_column(var = "order") %>% 
+  ggplot() +
+  geom_tile(aes(x=reorder(order, order), y = "Timepoint", fill = Rx), alpha = 0.8) +
+  scale_fill_manual(values = c(RX_UNTREATED_C, RX_TREATED_C)) +
+  scale_x_discrete(expand=c(0,0)) + scale_y_discrete(expand=c(0,0)) + 
+  labs(x = "", y = "", fill = "") +
+  guides(fill = guide_legend(byrow = TRUE)) +
+  default_theme_border() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title = element_blank(),
+        legend.key.spacing.y = unit(10,"pt"))
+
+
+bulk_classification_panel <-
+  panel_data_summary %>% 
+  dplyr::left_join((metadata_ICB %>% 
+                      dplyr::select(Rx, Patient_ID, Sample_ID) %>% unique()), by = "Sample_ID") %>% 
+  dplyr::left_join(project_metadata_GBM_verhaak_subtypes, by = c("Rx", "Patient_ID")) %>% 
+  tibble::rowid_to_column(var = "order") %>% 
+  ggplot() +
+  geom_tile(aes(x=reorder(order, order), y = "Verhhak GBM state (bulk)", fill = verhaak_subtype), alpha = 0.8) +
+  scale_fill_manual(values = c(VERHAAK_SUBTYPE_CLASSICAL_C, VERHAAK_SUBTYPE_MESENCHYMAL_C, VERHAAK_SUBTYPE_NEURAL_C, VERHAAK_SUBTYPE_PRONEURAL_C), na.translate = F) +
+  scale_x_discrete(expand=c(0,0)) + scale_y_discrete(expand=c(0,0)) + 
+  labs(x = "", y = "", fill = "") +
+  guides(fill = guide_legend(byrow = TRUE)) +
+  default_theme_border() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title = element_blank(),
+        legend.key.spacing.y = unit(10,"pt"))
+
+
+
+(rx_panel / bulk_classification_panel / jaccard_all_matrix) +
+  patchwork::plot_layout(heights = c(1,1,20), guides = "collect") +
+  patchwork::plot_annotation(title = paste0("Malignant cells - NMF results"), 
+                             theme = default_theme())
+
+```
+
+
+
+```{r Ex.Fig.7b-differential-expressed-genes-by-cell-type}
+
+# look at a marker-gene related plot
+metadata_ICB <- 
+  metadata_ICB %>% 
+  dplyr::mutate(Cell_type_grouped = case_when(malignant_group == "Malignant" ~ "Malignant",
+                                              Cell_type %in% c("T-cell", "NK-cell") ~ "Lymphocytes",
+                                              .default = Cell_type) %>% 
+                  factor(levels = c("Malignant", "Oligodendrocytes", "Myeloid", "Astrocyte", "Neurons", "Endothelial", "Pericytes", "Lymphocytes")))
+
+
+exp_mat_all_tpm_HLA <- readRDS(file = "backup_temp_data/exp_mat_all_tpm_HLA.rds")
+
+exp_mat_all_tpm_HLA %>% dim() # 8859  666948
+exp_mat_all_HLA_logged <- log2(exp_mat_all_tpm_HLA/10 +1)
+exp_mat_all_HLA <- exp_mat_all_HLA_logged %>% scalop::rowcenter()
+exp_mat_all_HLA %>% dim() # 8859  666948
+
+
+cell_type_markers_GBM <- read.csv2(file = "data/external/cell_type_markers_GBM_daniel.csv", sep = ",")
+cell_type_markers_GBM$gene_name[cell_type_markers_GBM$gene_name %!in% rownames(exp_mat_all_tpm_HLA)] # FCGR3A  KLRB1  FCGR3A
+cell_type_markers_GBM <- cell_type_markers_GBM %>% dplyr::filter(gene_name %in% rownames(exp_mat_all_tpm_HLA))
+cell_type_markers_GBM <-
+  cell_type_markers_GBM %>%
+  dplyr::filter(Cell_type %!in% c("T-cell", "NK-cell") |
+                (Cell_type %in% c("T-cell", "NK-cell") & gene_name %in% c("CD3E", "CD4", "CD8A", "KLRC1", "KLRD1", "NKG7"))) %>%
+  dplyr::mutate(Cell_type = case_when(Cell_type %in% c("T-cell", "NK-cell") ~ "Lymphocytes",
+                                      .default = Cell_type))
+
+
+cell_type_markers_median_exp <- exp_mat_all_HLA[unique(cell_type_markers_GBM$gene_name), ] %>% apply(1, median)
+cell_type_markers_median_exp %>% length() # 40
+
+
+cell_type_markers_median_exp_mat <- 
+  unique(cell_type_markers_GBM$gene_name) %>% map(function(gene_name) { 
+    
+    gene_exp_median <- cell_type_markers_median_exp[[gene_name]]
+    gene_exp_median < exp_mat_all_HLA[gene_name, ]
+  
+  }) %>% do.call(rbind, .)
+
+cell_type_markers_median_exp_mat %>% dim() # 40  666948
+rownames(cell_type_markers_median_exp_mat) <- unique(cell_type_markers_GBM$gene_name)
+
+
+MIN_CELLS_PER_CELL_TYPE <- 5
+
+fraction_of_cells_above_median <-
+  metadata_ICB$Sample_ID %>% unique() %>% 
+  map(function(cur_sample_id) {
+    
+    print(cur_sample_id)
+    
+    metadata_malignant_non_malignant_sample <- sample_cell_ids <- metadata_ICB %>% dplyr::filter(Sample_ID == cur_sample_id)
+    
+    cell_ids_by_cell_type_sample <- split(metadata_ICB$Cell_ID, metadata_ICB$Cell_type_grouped)
+    
+    cell_ids_by_cell_type_sample <- cell_ids_by_cell_type_sample[MIN_CELLS_PER_CELL_TYPE <= lengths(cell_ids_by_cell_type_sample)]
+    cell_ids_by_cell_type_sample %>% lengths()
+    
+    fraction_of_cells_above_median_per_cell_type <-
+      names(cell_ids_by_cell_type_sample) %>% 
+      map(function(cur_cell_type) {
+        
+        # cur_cell_type <- "AC-like"
+        
+        cur_cell_type_cell_ids <- cell_ids_by_cell_type_sample[[cur_cell_type]]
+        total_cells_above_median <- cell_type_markers_median_exp_mat[, cur_cell_type_cell_ids] %>% rowSums()
+        fraction_above_median <- total_cells_above_median/length(cur_cell_type_cell_ids)
+        
+        avg_exp <- exp_mat_all_HLA[rownames(cell_type_markers_median_exp_mat), cur_cell_type_cell_ids] %>% rowMeans()
+        
+        cbind(fraction_above_median, avg_exp) %>% reshape2::melt(varnames = c("gene_name", "category"), value.name = "value") %>% 
+          dplyr::mutate(Cell_type = cur_cell_type)
+        
+      }) %>% do.call(rbind, .)
+    
+    
+    fraction_of_cells_above_median_per_cell_type %>% 
+      dplyr::mutate(Sample_ID = cur_sample_id)
+    
+  }) %>% do.call(rbind, .)
+
+
+fraction_of_cells_above_median_summary <-
+  fraction_of_cells_above_median %>% 
+  dplyr::group_by(gene_name, category, Cell_type) %>% 
+  dplyr::summarise(mean_value = mean(value), .groups = "drop") %>% 
+  dplyr::left_join(cell_type_markers_GBM %>% 
+                     dplyr::select(gene_name, Cell_type_gene = Cell_type), by = "gene_name", relationship = "many-to-many") %>% 
+  tidyr::pivot_wider(id_cols = c("gene_name", "Cell_type", "Cell_type_gene"), names_from = "category", values_from = "mean_value") 
+
+
+
+MAX_EXP_ABS_THRESHOLD <- 3
+
+fraction_of_cells_above_median_summary %>% 
+  dplyr::mutate_at(c("Cell_type", "Cell_type_gene"), factor, levels = c("Malignant", "Oligodendrocytes", "Myeloid", "Astrocyte", "Neurons", "Endothelial", "Pericytes", "Lymphocytes")) %>%
+  dplyr::mutate(avg_exp_trim = case_when(avg_exp < -MAX_EXP_ABS_THRESHOLD ~ -MAX_EXP_ABS_THRESHOLD,
+                                         MAX_EXP_ABS_THRESHOLD < avg_exp ~ MAX_EXP_ABS_THRESHOLD,
+                                         .default = avg_exp)) %>% 
+  dplyr::filter(0.01 < fraction_above_median) %>%
+  ggplot(aes(x = gene_name, y = fct_rev(Cell_type))) +
+  geom_point(aes(size = 100*fraction_above_median, fill = avg_exp_trim), shape = 21) +
+  # geom_point(aes(size = 100*fraction_above_median, fill = avg_exp), shape = 21) + 
+  facet_grid(cols = vars(Cell_type_gene), scales = "free_x", space = "free_x") + 
+  scale_fill_gradient2(low = HEATMAP_LOW_VALUE_C, high = HEATMAP_HIGH_VALUE_C, mid = "white", midpoint = 0, breaks = c(-2.5,0,2.5),
+                       guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) +
+  scale_size(range = c(1, 15)) + 
+  labs(x = "", y = "", size = " % expressing cells", fill = "Exp") + 
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        panel.spacing.x=unit(0, "pt"),
+        axis.text.y = element_text(size = 30))
+
+```
+
+
+
+```{r Ex.Fig.7c-cell-type-distribution-by-patient}
+
+# per-patient fractions
+cell_type_fraction_by_sample_summary <-
+  metadata_ICB %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID, malignant_group, Cell_type_grouped, Cell_type) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID) %>% 
+  dplyr::mutate(total_sample = sum(count),
+                fraction = count/total_sample)
+  
+  
+cell_type_fraction_by_patient_summary <-
+  cell_type_fraction_by_sample_summary %>% 
+  dplyr::group_by(Rx, Patient_ID, malignant_group, Cell_type_grouped, Cell_type) %>% 
+  dplyr::summarise(mean_fraction = mean(fraction), .groups = "drop")
+
+
+
+cell_type_fraction_by_patient_summary %>% 
+  dplyr::group_by(Rx, Patient_ID, malignant_group, Cell_type_grouped) %>% 
+  dplyr::summarise(mean_fraction = sum(mean_fraction), .groups = "drop") %>% 
+  ggplot(aes(x = Patient_ID, y = mean_fraction, fill = Cell_type_grouped)) + 
+  geom_bar(stat = "identity", alpha = 0.8, color = "grey25", linewidth = 0.5, position = position_fill()) +
+  facet_grid(cols = vars(Rx), scales = "free_x", space = "free_x") +
+  scale_fill_manual(values = c(CELL_TYPE_MALIGNANT_C, CELL_TYPE_OLIGODENDROCYTE_C, CELL_TYPE_MYELOID_C, CELL_TYPE_ASTROCYTES_C, CELL_TYPE_NEURONS_C,
+                               CELL_TYPE_ENDOTHELIAL_C, CELL_TYPE_PERICYTES_C, CELL_TYPE_T_CELL_C, CELL_TYPE_NK_CELL_C)) +
+  labs(x = "", y = "Fraction", fill = "") + 
+  default_theme_xrot_90_border() + 
+  theme(panel.spacing.y = unit(0,"pt"),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_text(size = 14))
+
+
+
+cell_type_fraction_by_patient_summary %>% 
+  ggplot(aes(x = Patient_ID, y = mean_fraction, fill = Cell_type)) + 
+  geom_bar(stat = "identity", alpha = 0.8, color = "grey25", linewidth = 0.5, position = position_fill()) +
+  facet_grid(rows = vars(malignant_group), cols = vars(Rx), scales = "free", space = "free") + 
+  facetted_pos_scales(y = list(scale_y_continuous(expand = c(0,0), labels = label_comma()), # https://stackoverflow.com/a/65570612
+                               scale_y_reverse(expand = c(0,0), labels = label_comma()))) + 
+  scale_fill_manual(values = c(GBM_STATE_AC_C, GBM_STATE_MES_C, GBM_STATE_GPC_C, GBM_STATE_NPC_C, GBM_STATE_OPC_C, GBM_STATE_ND_C, # "grey75",
+                               CELL_TYPE_OLIGODENDROCYTE_C, CELL_TYPE_MYELOID_C, CELL_TYPE_ASTROCYTES_C, CELL_TYPE_NEURONS_C,
+                               CELL_TYPE_ENDOTHELIAL_C, CELL_TYPE_PERICYTES_C, CELL_TYPE_T_CELL_C, CELL_TYPE_NK_CELL_C)) +
+  labs(x = "", y = "Fraction", fill = "") + 
+  default_theme_xrot_90_border() + 
+  theme(panel.spacing.y = unit(0,"pt"),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_text(size = 14))
+
+```
+
+
+
+```{r Ex.Fig.7d-Verhaak-classification-expression-by-patient}
+
+pseudobulks_by_sample_pre_TPM <- readRDS(file = "backup_temp_data/Pseudobulk/pseudobulks_by_sample_pre_TPM.rds")
+pseudobulks_by_sample_cell_type_pre_TPM <- readRDS(file = "backup_temp_data/Pseudobulk/pseudobulks_by_sample_cell_type_pre_TPM.rds")
+pseudobulks_by_sample_post_TPM <- readRDS(file = "backup_temp_data/Pseudobulk/pseudobulks_by_sample_post_TPM.rds")
+pseudobulks_by_sample_cell_type_post_TPM <- readRDS(file = "backup_temp_data/Pseudobulk/pseudobulks_by_sample_cell_type_post_TPM.rds")
+
+GBM_Verhaak_signatures_df <- readRDS(file = "results/8_1_post_QC_analysis/nuc_seq/GBM_Verhaak_signatures_df.rds") 
+project_metadata_GBM_verhaak_subtypes <- readRDS(file = "results/8_1_post_QC_analysis/nuc_seq/project_metadata_GBM_verhaak_subtypes.rds")
+
+
+
+# manually calculate the bulk-RNA state by the maximal GBM cell-state fraction
+metadata_malignant <- metadata_ICB %>% dplyr::filter(malignant_group == "Malignant") %>% droplevels()
+metadata_malignant %>% dim() # 345094  15
+  
+MIN_MALIGNANT_SAMPLE_SIZE <- 100
+
+SAMPLES_TO_EXCLUDE <-
+  metadata_malignant %>%
+  dplyr::group_by(Rx, Patient_ID, Sample_ID) %>%
+  dplyr::summarise(total_sample = n(), .groups = "drop") %>%
+  # dplyr::arrange(count) %>%
+  dplyr::filter(total_sample < MIN_MALIGNANT_SAMPLE_SIZE) %>%
+  dplyr::pull(Sample_ID)
+
+SAMPLES_TO_EXCLUDE %>% length() # 3
+
+
+
+pseudobulk_verhaak_sample_classifications <-
+  cbind(log2(pseudobulks_by_sample_pre_TPM + 1),
+        log2(pseudobulks_by_sample_post_TPM + 1)) %>% scalop::rowcenter() %>% 
+  scalop::sigScores(sigs = split(GBM_Verhaak_signatures_df$gene_name, GBM_Verhaak_signatures_df$sig_name), expr.center = FALSE) %>% 
+  dplyr::mutate(pseudobulk_verhaak_subtype = colnames(.)[max.col(.)]) %>% 
+  tibble::rownames_to_column(var = "Sample_ID")
+
+
+
+# (B) compare sample-level pseudo-bulks Verhaak mesenchymal expression
+pseudobulks_by_sample_pre_TPM %>% dim() # 36601  22
+
+pseudobulks_by_sample_GBM_Verhaak_summary <-
+  cbind(log2(pseudobulks_by_sample_pre_TPM[GBM_Verhaak_signatures_df$gene_name, ] + 1),
+        log2(pseudobulks_by_sample_post_TPM[GBM_Verhaak_signatures_df$gene_name, ] + 1)) %>% scalop::rowcenter() %>% 
+  reshape2::melt(varnames = c("gene_name", "Sample_ID"), value.name = "Exp") %>% 
+  dplyr::left_join(GBM_Verhaak_signatures_df, by = "gene_name", relationship = "many-to-many") %>%
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::group_by(Rx, Patient_ID, Sample_ID) %>% 
+                     dplyr::summarise(total_sample = n(), .groups = "drop"), by = "Sample_ID") %>% 
+  dplyr::left_join(project_metadata %>% 
+                     dplyr::select(Patient_ID, Overall_survival_18m), by = "Patient_ID") %>% 
+  dplyr::left_join(project_metadata_GBM_verhaak_subtypes %>% 
+                     dplyr::select(Patient_ID, Rx, bulk_verhaak_subtype = verhaak_subtype), by = c("Patient_ID", "Rx")) %>% 
+  dplyr::left_join(pseudobulk_verhaak_sample_classifications %>% 
+                     dplyr::select(Sample_ID, pseudobulk_verhaak_subtype), by = "Sample_ID")
+
+
+
+PATIENTS_TO_EXCLUDE <- c()
+
+pseudobulks_by_sample_GBM_Verhaak_summary_filtered <- 
+  pseudobulks_by_sample_GBM_Verhaak_summary %>% 
+  dplyr::filter(Patient_ID %!in% PATIENTS_TO_EXCLUDE,
+                Sample_ID %!in% SAMPLES_TO_EXCLUDE)
+
+
+# pseudobulk_samples_order_GBM_Verhaak_MES <-
+#   pseudobulks_by_sample_GBM_Verhaak_summary_filtered %>% 
+#   dplyr::filter(sig_name == "Mesenchymal") %>% 
+#   dplyr::group_by(Rx, Patient_ID, Sample_ID, Overall_survival_18m, bulk_verhaak_subtype, pseudobulk_verhaak_subtype) %>% 
+#   dplyr::summarise(mean_exp = mean(Exp), .groups = "drop") %>% 
+#   arrange(-mean_exp) %>% 
+#   tibble::rowid_to_column(var = "sample_order")
+# 
+# 
+# sample_classification_bulk_verhaak_panel <-
+#   pseudobulk_samples_order_GBM_Verhaak_MES %>% 
+#   dplyr::mutate(pseudobulk_verhaak_patient_group = case_when(pseudobulk_verhaak_subtype == "Mesenchymal" ~ "Mesenchymal",
+#                                                              .default = "Others") %>% factor(levels = c("Others", "Mesenchymal"))) %>% 
+#   # dplyr::left_join(project_metadata_GBM_verhaak_subtypes %>% 
+#   #                    dplyr::select(Patient_ID, Rx, verhaak_subtype), by = c("Patient_ID", "Rx")) %>% 
+#   ggplot(aes(x= reorder(Sample_ID, -sample_order), y = "Verhhak GBM state (bulk)")) + 
+#   geom_tile(aes(fill = bulk_verhaak_subtype), alpha = 0.8) + 
+#   facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") +  
+#   scale_fill_manual(values = c(VERHAAK_SUBTYPE_CLASSICAL_C, VERHAAK_SUBTYPE_MESENCHYMAL_C, VERHAAK_SUBTYPE_NEURAL_C, VERHAAK_SUBTYPE_PRONEURAL_C), na.value = "white") + 
+#   scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) + 
+#   labs(x = "", y = "", fill = "Verhaak GBM state") + 
+#   default_theme_xrot_90_border() +
+#   theme(legend.key.spacing.y = unit(10,"pt"),
+#         axis.text.x = element_blank(), axis.ticks.x = element_blank())
+# 
+# 
+# sample_classification_pseudobulk_verhaak_panel <-
+#   pseudobulk_samples_order_GBM_Verhaak_MES %>% 
+#   dplyr::mutate(pseudobulk_verhaak_patient_group = case_when(pseudobulk_verhaak_subtype == "Mesenchymal" ~ "Mesenchymal",
+#                                                              .default = "Others") %>% factor(levels = c("Others", "Mesenchymal"))) %>% 
+#   ggplot(aes(x= reorder(Sample_ID, -sample_order), y = "Verhhak GBM state (pseudobulk)")) + 
+#   geom_tile(aes(fill = pseudobulk_verhaak_subtype), alpha = 0.8, show.legend = FALSE) + 
+#   facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") +  
+#   scale_fill_manual(values = c(VERHAAK_SUBTYPE_CLASSICAL_C, VERHAAK_SUBTYPE_MESENCHYMAL_C, VERHAAK_SUBTYPE_NEURAL_C, VERHAAK_SUBTYPE_PRONEURAL_C), na.value = "white") + 
+#   scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) + 
+#   labs(x = "", y = "", fill = "Verhaak GBM state (bulk)") + 
+#   default_theme_xrot_90_border() +
+#   theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+#         legend.key.spacing.y = unit(10,"pt"),
+#         axis.text.x = element_blank(), axis.ticks.x = element_blank())
+# 
+# 
+# sample_RX_ICB_timepoint_panel <-
+#   pseudobulk_samples_order_GBM_Verhaak_MES %>% 
+#   dplyr::mutate(pseudobulk_verhaak_patient_group = case_when(pseudobulk_verhaak_subtype == "Mesenchymal" ~ "Mesenchymal",
+#                                                              .default = "Others") %>% factor(levels = c("Others", "Mesenchymal"))) %>% 
+#   ggplot(aes(x= reorder(Sample_ID, -sample_order), y = "Timepoint")) + 
+#   geom_tile(aes(fill = Rx), alpha = 0.8) + 
+#   facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") + 
+#   scale_fill_manual(values = c(RX_PRE_ICB_C, RX_POST_ICB_C)) + 
+#   scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) + 
+#   labs(x = "", y = "", fill = "") + 
+#   default_theme_xrot_90_border() +
+#   theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+#         legend.key.spacing.y = unit(10,"pt"),
+#         axis.text.x = element_blank(), axis.ticks.x = element_blank())
+# 
+# 
+# overall_survival_18m_sample_panel <-
+#   pseudobulk_samples_order_GBM_Verhaak_MES %>%
+#   dplyr::mutate(pseudobulk_verhaak_patient_group = case_when(pseudobulk_verhaak_subtype == "Mesenchymal" ~ "Mesenchymal",
+#                                                              .default = "Others") %>% factor(levels = c("Others", "Mesenchymal"))) %>% 
+#   ggplot(aes(x= reorder(Sample_ID, -sample_order), y = "Overall survival")) +
+#   geom_tile(aes(fill = Overall_survival_18m), alpha = 0.8) +
+#   facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") +
+#   scale_fill_manual(values = c(SURVIVAL_SS_C, SURVIVAL_LS_C)) +
+#   scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) +
+#   labs(x = "", y = "", fill = "Overall survival") +
+#   default_theme_xrot_90_border() +
+#   theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+#         legend.key.spacing.y = unit(10,"pt"),
+#         axis.text.x = element_blank(), axis.ticks.x = element_blank())
+# 
+# 
+# 
+# MAX_LOG2_EXPRESSION_THRESHOLD <- 4
+# 
+# pseudobulks_by_sample_GBM_Verhaak_heatmap <- 
+#   pseudobulks_by_sample_GBM_Verhaak_summary_filtered %>% 
+#   dplyr::left_join(pseudobulk_samples_order_GBM_Verhaak_MES %>% 
+#                      dplyr::select(Sample_ID, sample_order), by = c("Sample_ID")) %>% 
+#   dplyr::mutate(pseudobulk_verhaak_patient_group = case_when(pseudobulk_verhaak_subtype == "Mesenchymal" ~ "Mesenchymal",
+#                                                              .default = "Others") %>% factor(levels = c("Others", "Mesenchymal"))) %>% 
+#   dplyr::mutate(exp_trim = case_when(Exp < -MAX_LOG2_EXPRESSION_THRESHOLD ~ -MAX_LOG2_EXPRESSION_THRESHOLD,
+#                                      MAX_LOG2_EXPRESSION_THRESHOLD < Exp ~ MAX_LOG2_EXPRESSION_THRESHOLD,
+#                                      .default = Exp)) %>% 
+#   ggplot(aes(x= reorder(Sample_ID, -sample_order), y = reorder(gene_name, -gene_order))) + 
+#   geom_tile(aes(fill = exp_trim)) + 
+#   facet_grid(cols = vars(pseudobulk_verhaak_patient_group), rows = vars(sig_name), scales = "free", space = "free") + 
+#   scale_fill_gradient2(low = HEATMAP_LOW_VALUE_C, high = HEATMAP_HIGH_VALUE_C, mid = "white", midpoint = 0,
+#                        guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) + 
+#   labs(x = "", y = "Verhaak signatures genes", fill = "Exp, log2") + 
+#   default_theme_xrot_90_border() +
+#   theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+#         axis.text.y = element_blank(), axis.ticks.y = element_blank())
+# 
+# 
+# 
+# (sample_classification_bulk_verhaak_panel / plot_spacer() / sample_classification_pseudobulk_verhaak_panel / plot_spacer() / overall_survival_18m_sample_panel / plot_spacer() / sample_RX_ICB_timepoint_panel / plot_spacer() / pseudobulks_by_sample_GBM_Verhaak_heatmap) + 
+#       patchwork::plot_layout(heights = c(1,-1.2,1,-1.2,1,-1.2,1,-1.2,20), 
+#                              guides = "collect") +
+#       patchwork::plot_annotation(# title = "pre-ICB samples", 
+#                                  subtitle = ifelse(length(PATIENTS_TO_EXCLUDE) == 0, 
+#                                                    yes = "", no = paste0("Excluded patients: ", paste(PATIENTS_TO_EXCLUDE, collapse = ", "))), 
+#                                  theme = default_theme())
+# # ggsave(filename = paste0(FOLDER_PATH, "/PDF/Verhaak_expression_by_sample_", MAX_LOG2_EXPRESSION_THRESHOLD, "_", paste(PATIENTS_TO_EXCLUDE, collapse = "_"), "_all_pseudobulk_classification.pdf"), width = 24, height = 20)
+
+
+
+
+# by patient
+pseudobulk_verhaak_patient_classifications <- 
+  pseudobulk_verhaak_sample_classifications %>% 
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::select(Rx, Patient_ID, Sample_ID) %>% unique(), by = "Sample_ID") %>% 
+  dplyr::group_by(Rx, Patient_ID) %>% 
+  dplyr::summarise(pseudobulk_verhaak_patient = case_when(n_distinct(pseudobulk_verhaak_subtype) == 1 ~ unique(pseudobulk_verhaak_subtype),
+                                                          .default = NA), .groups = "drop")
+
+pseudobulk_verhaak_patient_classifications %>% print(n = Inf)
+
+
+
+pseudobulks_by_patient_GBM_Verhaak_summary_filtered <-
+  pseudobulks_by_sample_GBM_Verhaak_summary_filtered %>% 
+  dplyr::group_by(Rx, Patient_ID, gene_name, gene_order, sig_name, Overall_survival_18m, bulk_verhaak_subtype) %>% 
+  dplyr::summarise(mean_exp_patient = mean(Exp), .groups = "drop") %>% 
+  dplyr::left_join(pseudobulk_verhaak_patient_classifications, by = c("Rx", "Patient_ID")) %>% 
+  dplyr::mutate(pseudobulk_verhaak_patient_group = case_when(pseudobulk_verhaak_patient == "Mesenchymal" ~ "Mesenchymal",
+                                                             .default = "Others") %>% factor(levels = c("Others", "Mesenchymal")))
+
+
+
+pseudobulk_patient_order_GBM_Verhaak_MES <-
+  pseudobulks_by_patient_GBM_Verhaak_summary_filtered %>% 
+  dplyr::filter(sig_name == "Mesenchymal") %>% 
+  dplyr::group_by(Rx, Patient_ID, Overall_survival_18m, pseudobulk_verhaak_patient, pseudobulk_verhaak_patient_group) %>% 
+  dplyr::summarise(mean_exp = mean(mean_exp_patient), .groups = "drop") %>% 
+  arrange(-mean_exp) %>% 
+  tibble::rowid_to_column(var = "patient_order")
+
+
+
+patient_classification_bulk_verhaak_panel <-
+  pseudobulk_patient_order_GBM_Verhaak_MES %>%
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  dplyr::left_join(project_metadata_GBM_verhaak_subtypes %>%
+                     dplyr::select(Patient_ID, Rx, bulk_verhaak_subtype = verhaak_subtype), by = c("Patient_ID", "Rx")) %>%
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = "Verhhak GBM state (bulk)")) +
+  geom_tile(aes(fill = bulk_verhaak_subtype), alpha = 0.8, show.legend = FALSE) +
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") +
+  scale_fill_manual(values = c(VERHAAK_SUBTYPE_CLASSICAL_C, VERHAAK_SUBTYPE_MESENCHYMAL_C, VERHAAK_SUBTYPE_NEURAL_C, VERHAAK_SUBTYPE_PRONEURAL_C), na.value = "white") +
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) +
+  labs(x = "", y = "", fill = "Verhaak GBM state") +
+  default_theme_xrot_90_border() +
+  theme(legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+
+patient_classification_pseudobulk_verhaak_panel <-
+  pseudobulk_patient_order_GBM_Verhaak_MES %>%
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  dplyr::left_join(project_metadata_GBM_verhaak_subtypes %>%
+                     dplyr::select(Patient_ID, Rx, bulk_verhaak_subtype = verhaak_subtype), by = c("Patient_ID", "Rx")) %>%
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = "Verhhak GBM state (pseudobulk)")) +
+  geom_tile(aes(fill = pseudobulk_verhaak_patient), alpha = 0.8) +
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") +
+  scale_fill_manual(values = c(VERHAAK_SUBTYPE_CLASSICAL_C, VERHAAK_SUBTYPE_MESENCHYMAL_C, VERHAAK_SUBTYPE_NEURAL_C, VERHAAK_SUBTYPE_PRONEURAL_C), na.value = "white") +
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) +
+  labs(x = "", y = "", fill = "Verhaak GBM state (pseudobulk)") +
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+
+
+overall_survival_18m_patient_panel <-
+  pseudobulk_patient_order_GBM_Verhaak_MES %>% 
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  dplyr::left_join(pseudobulk_verhaak_patient_classifications, by = c("Rx", "Patient_ID")) %>% 
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = "Overall survival")) + 
+  geom_tile(aes(fill = Overall_survival_18m), alpha = 0.8) + 
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") + 
+  scale_fill_manual(values = c(SURVIVAL_SS_C, SURVIVAL_LS_C), na.value = "white") + 
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) + 
+  labs(x = "", y = "", fill = "Overall survival") + 
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+  
+
+
+patient_RX_ICB_timepoint_panel <-
+  pseudobulk_patient_order_GBM_Verhaak_MES %>% 
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = "Timepoint")) + 
+  geom_tile(aes(fill = Rx), alpha = 0.8) + 
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") + 
+  scale_fill_manual(values = c(RX_PRE_ICB_C, RX_POST_ICB_C)) + 
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) + 
+  labs(x = "", y = "", fill = "") + 
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+
+
+MAX_LOG2_EXPRESSION_THRESHOLD <- 4
+
+pseudobulks_by_patient_GBM_Verhaak_heatmap <- 
+  pseudobulks_by_patient_GBM_Verhaak_summary_filtered %>% 
+  dplyr::left_join(pseudobulk_patient_order_GBM_Verhaak_MES %>% 
+                     dplyr::select(Rx, Patient_ID, patient_order), by = c("Rx", "Patient_ID")) %>% 
+  dplyr::mutate(mean_exp_patient_trim = case_when(mean_exp_patient < -MAX_LOG2_EXPRESSION_THRESHOLD ~ -MAX_LOG2_EXPRESSION_THRESHOLD,
+                                                  MAX_LOG2_EXPRESSION_THRESHOLD < mean_exp_patient ~ MAX_LOG2_EXPRESSION_THRESHOLD,
+                                                  .default = mean_exp_patient)) %>% 
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = reorder(gene_name, -gene_order))) + 
+  geom_tile(aes(fill = mean_exp_patient_trim)) + 
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), rows = vars(sig_name), scales = "free", space = "free") + 
+  scale_fill_gradient2(low = HEATMAP_LOW_VALUE_C, high = HEATMAP_HIGH_VALUE_C, mid = "white", midpoint = 0,
+                       guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) + 
+  labs(x = "", y = "Verhaak signatures genes", fill = "Exp, log2") + 
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+
+
+(patient_classification_bulk_verhaak_panel / plot_spacer() / patient_classification_pseudobulk_verhaak_panel / plot_spacer() / overall_survival_18m_patient_panel / plot_spacer() / patient_RX_ICB_timepoint_panel / plot_spacer() /  pseudobulks_by_patient_GBM_Verhaak_heatmap) + 
+  patchwork::plot_layout(heights = c(1,-1.4,1,-1.4,1,-1.4,1,-1.4,25), 
+                         guides = "collect") +
+  patchwork::plot_annotation(subtitle = ifelse(length(PATIENTS_TO_EXCLUDE) == 0, 
+                                               yes = "", no = paste0("Excluded patients: ", paste(PATIENTS_TO_EXCLUDE, collapse = ", "))), 
+                             theme = default_theme())
+
+```
+

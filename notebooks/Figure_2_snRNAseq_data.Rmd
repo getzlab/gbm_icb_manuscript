@@ -1,0 +1,628 @@
+---
+title: "Figure_2_snRNAseq_data"
+output: html_document
+date: "2025-10-15"
+---
+
+```{r setup, include=FALSE}
+
+# load libraries
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+
+
+# load data
+metadata_ICB <- readRDS(file = "results/8_1_post_QC_analysis/nuc_seq/merged/sig_scores/metadata_ICB.rds")
+metadata_ICB %>% dim() # 666948  15
+
+project_metadata <- readRDS(file = "backup_temp_data/project_metadata_ICB.rds")
+
+
+# load constants
+UMAP_AXES_DATA <- list(x = -20, y = -20, x_len = 4, y_len = 4) # https://stackoverflow.com/a/74721171
+
+
+# generate ggplot themes
+base_theme <- function() {
+  
+  theme_classic(base_size = 25) + 
+    theme(plot.title = element_text(face = "bold"), plot.title.position = "plot", plot.subtitle = element_text(lineheight = 1.1),
+          axis.line = element_blank()
+    )
+  
+}
+
+umap_theme <- function() {
+  
+  base_theme() +
+    theme(axis.ticks = element_blank(), axis.text = element_blank(),
+          axis.title.x = element_text(hjust = 0.1), axis.title.y = element_text(hjust = 0.1), axis.title = element_text(size = 14)
+    )
+  
+}
+
+
+default_theme <- function() {
+  
+  theme_classic(base_size = 25) + 
+    theme(plot.title = element_text(face = "bold"), plot.title.position = "plot", plot.subtitle = element_text(lineheight = 1.1),
+          strip.text = element_text(size = 20),
+          panel.grid.minor.y = element_line(linewidth = 0.25, linetype = 1),
+          panel.grid.major.y = element_line(linewidth = 0.5, linetype = 1),
+    )
+  
+}
+
+
+default_theme_xrot_90 <- function() {
+  
+  default_theme() +
+    theme(axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1))
+}
+
+
+default_theme_xrot_90_border <- function() {
+  
+  default_theme() +
+    theme(axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank())
+}
+
+
+# load color palettes
+HEATMAP_LOW_VALUE_C <- "#3C5488"
+HEATMAP_HIGH_VALUE_C <- "#E64B35"
+
+SURVIVAL_LS_C <- "#D494B9" 
+SURVIVAL_SS_C <- "#32B18F" 
+
+
+GBM_STATE_AC_C <- "#FFCC80"
+GBM_STATE_GPC_C <- "#B39DDB"
+GBM_STATE_MES_C <- "#EF9A9A"
+GBM_STATE_NPC_C <- "#B0BEC5"
+GBM_STATE_OPC_C <- "#90CAF9"
+GBM_STATE_ND_C <- "white"
+
+CELL_TYPE_MALIGNANT_C <- "#C2185B"
+CELL_TYPE_OLIGODENDROCYTE_C <- "#FF6961"
+CELL_TYPE_MYELOID_C <- "#FFB480"
+CELL_TYPE_ASTROCYTES_C <- "#F8F38D"
+CELL_TYPE_NEURONS_C <- "#D4E157"
+CELL_TYPE_ENDOTHELIAL_C <- "#81C784"
+CELL_TYPE_PERICYTES_C <- "#42d6a4"
+CELL_TYPE_T_CELL_C <- "#59adf6"
+CELL_TYPE_NK_CELL_C <- "#9d94ff"
+
+
+# create utilities functions
+`%!in%` <- Negate(`%in%`)
+
+```
+
+
+
+```{r Fig.2f-umap}
+
+# generate UMAP
+metadata_ICB %>% 
+  ggplot2::ggplot(aes(x=UMAP_all.V1, y=UMAP_all.V2)) + 
+  geom_point(aes(color=Cell_type_grouped), alpha = 0.5, size = 1) + 
+  annotate("segment", 
+           x = UMAP_AXES_DATA$x, xend = UMAP_AXES_DATA$x + c(UMAP_AXES_DATA$x_len, 0), 
+           y = UMAP_AXES_DATA$y, yend = UMAP_AXES_DATA$y + c(0, UMAP_AXES_DATA$y_len), 
+           arrow = arrow(type = "closed", length = unit(10, 'pt'))) +
+  scale_color_manual(values = c(CELL_TYPE_MALIGNANT_C, CELL_TYPE_OLIGODENDROCYTE_C, CELL_TYPE_MYELOID_C, CELL_TYPE_ASTROCYTES_C, CELL_TYPE_NEURONS_C,
+                                CELL_TYPE_ENDOTHELIAL_C, CELL_TYPE_PERICYTES_C, CELL_TYPE_T_CELL_C, CELL_TYPE_NK_CELL_C)) +
+  labs(x="UMAP1", y= "UMAP2", color = "") + 
+  guides(color = guide_legend(override.aes = list(size = 5, alpha = 0.8),
+                              byrow = TRUE)) +
+  umap_theme() +
+  theme(legend.key.spacing.y = unit(10,"pt"), legend.position = "bottom")
+
+```
+
+
+
+```{r Fig.2g-malignant-cell-state-fraction}
+
+metadata_ICB_malignant <- metadata_ICB %>% dplyr::filter(malignant_group == "Malignant") %>% droplevels()
+
+metadata_ICB_malignant %>% dim() # 345094  15
+
+PATIENTS_TO_EXCLUDE <- c("28", "182")
+MIN_SAMPLE_SIZE <- 100
+
+
+# (B) compare all GBM states
+pre_ICB_GBM_states_fraction_summary <- 
+  metadata_ICB_malignant %>% 
+  dplyr::filter(Rx == "Pre-ICB") %>% 
+  dplyr::left_join(project_metadata %>% 
+                     dplyr::select(Patient_ID, Overall_survival_18m), by = "Patient_ID") %>% 
+  dplyr::group_by(Patient_ID, Sample_ID, Cell_type, Overall_survival_18m) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>% 
+  dplyr::group_by(Patient_ID, Sample_ID, Overall_survival_18m) %>% 
+  dplyr::mutate(total_sample = sum(count),
+                fraction = count/total_sample) %>% 
+  dplyr::filter(MIN_SAMPLE_SIZE <= total_sample) %>% 
+  dplyr::group_by(Patient_ID, Cell_type, Overall_survival_18m) %>% 
+  dplyr::summarise(mean_fraction = mean(fraction), .groups = "drop")
+
+
+pre_ICB_GBM_states_fraction_summary <-
+  pre_ICB_GBM_states_fraction_summary %>% 
+  dplyr::filter(Patient_ID %!in% PATIENTS_TO_EXCLUDE)
+
+
+# STATISTICS
+pre_ICB_GBM_states_fraction_stats <-
+  pre_ICB_GBM_states_fraction_summary %>% 
+  dplyr::group_by(Cell_type) %>% 
+  rstatix::wilcox_test(mean_fraction ~ Overall_survival_18m) %>% 
+  adjust_pvalue(method = "none") %>%
+  add_significance() %>% 
+  add_xy_position(x = "Cell_type", scales = "free")
+
+
+pre_ICB_GBM_states_fraction_summary %>% 
+  dplyr::filter(Cell_type != "Malignant (ND)") %>% 
+  ggplot(aes(x = Cell_type, y = mean_fraction)) + 
+  geom_point(aes(fill = Overall_survival_18m), color = "grey75", alpha = 0.5, position = position_jitterdodge()) + 
+  geom_boxplot(aes(fill = Overall_survival_18m), outlier.shape = NA, alpha = 0.8, linewidth = 0.8) + 
+  stat_pvalue_manual(pre_ICB_GBM_states_fraction_stats, bracket.nudge.y = 0.05, hide.ns = FALSE, label = "{p.adj.signif}\n({p.adj})", size = 5) +
+  scale_fill_manual(values = c(SURVIVAL_SS_C, SURVIVAL_LS_C)) +
+  labs(title = "Pre-ICB samples",
+       subtitle = ifelse(length(PATIENTS_TO_EXCLUDE) == 0, 
+                         yes = "", no = paste0("Excluded patients: ", paste(PATIENTS_TO_EXCLUDE, collapse = ", "))), 
+       x = "", y = "Fraction", fill = "") + 
+  lims(y = c(0,1.2)) +
+  default_theme_xrot_90() + 
+  theme(legend.key.spacing.y = unit(10,"pt"))
+
+```
+
+
+
+```{r Fig.2f-non-malignant-cell-state-fraction}
+
+# look for differences in purity
+purity_summary <- 
+  metadata_ICB %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID, is_malignant = (malignant_group == "Malignant")) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>% 
+  tidyr::pivot_wider(id_cols = c(Rx, Patient_ID, Sample_ID), names_from = is_malignant, values_from = count, values_fill = 0) %>% 
+  tidyr::pivot_longer(cols = c("TRUE", "FALSE"), names_to = "is_malignant", values_to = "count") %>% 
+  dplyr::filter(Rx == "Pre-ICB") %>% 
+  dplyr::left_join(project_metadata %>% 
+                     dplyr::select(Patient_ID, Overall_survival_18m), by = "Patient_ID") %>%
+  dplyr::group_by(Patient_ID, Sample_ID, Overall_survival_18m) %>% 
+  dplyr::mutate(total_sample = sum(count),
+                fraction = count/total_sample)
+
+
+purity_avg_summary <-
+  purity_summary %>% 
+  dplyr::filter(is_malignant == TRUE) %>% 
+  dplyr::group_by(Overall_survival_18m, Patient_ID, is_malignant) %>% 
+  dplyr::summarise(mean_purity = mean(fraction), .groups = "drop")
+
+
+# STATISTICS
+purity_avg_stats <- 
+  purity_avg_summary %>% 
+  rstatix::t_test(mean_purity ~ Overall_survival_18m) %>% 
+  adjust_pvalue(method = "none") %>% dplyr::mutate_at(c("p.adj"), round, digits = 3) %>%
+  add_significance() %>% 
+  add_xy_position(x = "Overall_survival_18m", scales = "free")
+
+
+purity_avg_summary %>% 
+  ggplot(aes(x = Overall_survival_18m, y = mean_purity)) +
+  geom_point(color = "grey75", position = position_jitter(height = 0, seed = 0), size = 5) +
+  geom_boxplot(aes(fill = Overall_survival_18m), outlier.shape = NA, alpha = 0.7, linewidth = 0.8) +
+  stat_pvalue_manual(purity_avg_stats, bracket.nudge.y = 0.1, hide.ns = FALSE, label = "{p.adj.signif}\n({p.adj})", size = 5) +
+  scale_fill_manual(values = c(SURVIVAL_SS_C, SURVIVAL_LS_C)) +
+  lims(y = c(0,1.1)) +
+  labs(x = "", y = "Tumor purity (fraction)", fill = "") +
+  default_theme_xrot_90() +
+  theme(legend.key.spacing.y = unit(10,"pt"))
+
+
+# look for differences pre-ICB samples fractions by OS
+MIN_PURITY_THRESHOLD <- 0.5
+
+SAMPLES_WITH_LOW_PURITY <- 
+  purity_summary %>% 
+  dplyr::filter(is_malignant == TRUE) %>% 
+  dplyr::filter(fraction < MIN_PURITY_THRESHOLD) %>% 
+  dplyr::pull(Sample_ID)
+
+SAMPLES_WITH_LOW_PURITY %>% length() # 7
+
+
+
+purity_avg_summary %>% 
+  ggplot(aes(x = Overall_survival_18m, y = mean_purity)) +
+  geom_point(color = "grey75", position = position_jitter(height = 0, seed = 0), size = 5) +
+  geom_boxplot(aes(fill = Overall_survival_18m), outlier.shape = NA, alpha = 0.7, linewidth = 0.8) +
+  geom_hline(yintercept = MIN_PURITY_THRESHOLD, linewidth = 0.8, color = "darkred", linetype = "dashed") + 
+  stat_pvalue_manual(purity_avg_stats, bracket.nudge.y = 0.1, hide.ns = FALSE, label = "{p.adj.signif}\n({p.adj})", size = 5) +
+  scale_fill_manual(values = c(SURVIVAL_SS_C, SURVIVAL_LS_C)) +
+  lims(y = c(0,1.1)) +
+  labs(x = "", y = "Tumor purity (fraction)", fill = "") +
+  default_theme_xrot_90() +
+  theme(legend.key.spacing.y = unit(10,"pt"))
+
+
+
+# (C) look for differences pre-ICB samples fractions by OS
+
+# SAMPLES_TO_EXCLUDE <- c()
+SAMPLES_TO_EXCLUDE <- SAMPLES_WITH_LOW_PURITY
+PATIENTS_TO_EXCLUDE <- c("28", "182")
+
+
+
+non_malignant_fraction_by_sample_summary <-
+  metadata_ICB %>% 
+  dplyr::filter(malignant_group == "Non-malignant") %>% droplevels() %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID, Cell_type) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>% 
+  tidyr::pivot_wider(id_cols = c(Rx, Patient_ID, Sample_ID), names_from = Cell_type, values_from = count, values_fill = 0) %>% 
+  tidyr::pivot_longer(cols = c(Oligodendrocytes, Myeloid, Astrocyte, Neurons, Endothelial, Pericytes, `T-cell`, `NK-cell`), 
+                      names_to = "Cell_type", values_to = "count") %>% 
+  dplyr::mutate_at(c("Cell_type"), factor, levels = c("Oligodendrocytes", "Myeloid", "Astrocyte", "Neurons", "Endothelial", "Pericytes", "T-cell", "NK-cell")) %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID) %>% 
+  dplyr::mutate(total_sample = sum(count),
+                fraction = count/total_sample)
+
+
+non_malignant_fraction_by_patient_summary <-
+  non_malignant_fraction_by_sample_summary %>% 
+  dplyr::filter(Sample_ID %!in% SAMPLES_TO_EXCLUDE,
+                Patient_ID %!in% PATIENTS_TO_EXCLUDE) %>% 
+  dplyr::group_by(Rx, Patient_ID, Cell_type) %>% 
+  dplyr::summarise(mean_fraction = mean(fraction), .groups = "drop") %>% 
+  dplyr::left_join(project_metadata %>% 
+                     dplyr::select(Patient_ID, Overall_survival_18m), by = "Patient_ID")
+
+
+non_malignant_fraction_by_patient_pre_summary <-
+  non_malignant_fraction_by_patient_summary %>% 
+  dplyr::filter(Rx == "Pre-ICB") %>% droplevels()
+
+
+# STATISTICS
+non_malignant_avg_fraction_pre_ICB_stats <-
+  non_malignant_fraction_by_patient_pre_summary %>% 
+  dplyr::group_by(Cell_type) %>% 
+  rstatix::wilcox_test(mean_fraction ~ Overall_survival_18m) %>%
+  adjust_pvalue(method = "none") %>%
+  add_significance() %>% 
+  add_xy_position(x = "Cell_type", scales = "free")
+
+
+non_malignant_fraction_by_patient_pre_summary %>% 
+  ggplot(aes(x = Cell_type, y = mean_fraction)) + 
+  geom_point(aes(fill = Overall_survival_18m), color = "grey75", alpha = 0.5, position = position_jitterdodge()) + 
+  geom_boxplot(aes(fill = Overall_survival_18m), outlier.shape = NA, alpha = 0.8, linewidth = 0.8) + 
+  stat_pvalue_manual(non_malignant_avg_fraction_pre_ICB_stats, bracket.nudge.y = 0.05, hide.ns = FALSE, label = "{p.adj.signif}\n({p.adj})", size = 5) +
+  scale_fill_manual(values = c(SURVIVAL_SS_C, SURVIVAL_LS_C)) +
+  labs(title = "Pre-ICB samples",
+       subtitle = ifelse(length(PATIENTS_TO_EXCLUDE) == 0, 
+                         yes = "", no = paste0("Excluded patients: ", paste(PATIENTS_TO_EXCLUDE, collapse = ", "))), 
+       x = "", y = "Fraction", fill = "") + 
+  lims(y = c(0,0.9)) +
+  default_theme_xrot_90() + 
+  theme(legend.key.spacing.y = unit(10,"pt"))
+
+```
+
+
+
+```{r Fig.2j-HLA-class-I-score-by-malignant-state}
+
+# load data
+exp_mat_all_tpm_HLA <- readRDS(file = "backup_temp_data/exp_mat_all_tpm_HLA.rds")
+exp_mat_all_tpm_HLA %>% dim() # 8859  666948
+
+# generate HLA object according to the mSigDB gene-sets:
+#  - GOCC_MHC_CLASS_I_PROTEIN_COMPLEX
+#  - GOCC_MHC_CLASS_II_PROTEIN_COMPLEX
+MHC_I_GENES <- c("B2M", "HFE", "HLA-A", "HLA-B", "HLA-C", "HLA-E", "HLA-F", "HLA-G", "HLA-H", "MR1")
+MHC_II_GENES <- c("CD74", "HLA-DMA", "HLA-DMB", "HLA-DOA", "HLA-DOB", "HLA-DPA1", "HLA-DPB1", "HLA-DQA1", "HLA-DQA2", "HLA-DQB1", "HLA-DQB2", "HLA-DRA", "HLA-DRB1",
+                  "HLA-DRB3", "HLA-DRB4", "HLA-DRB5")
+
+HLA_GENES <-
+  data.frame(gene_name = c(MHC_I_GENES, MHC_II_GENES),
+             HLA_class = c(rep("MHC class I", length(MHC_I_GENES)), rep("MHC class II", length(MHC_II_GENES)))) %>% 
+  tibble::rowid_to_column(var = "gene_order")
+
+
+
+# (A) Generate bulk expression by cell type
+
+# (A.1) calculate sample sizes to exclude samples with less than N cells
+MIN_NUMBER_OF_CELL_PER_CELL_TYPE <- 20
+
+sample_cell_type_counts_summary <-
+  metadata_ICB %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID, malignant_group, Cell_type) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>% 
+  dplyr::filter(MIN_NUMBER_OF_CELL_PER_CELL_TYPE <= count)
+
+
+# (A.2) calculate the bulk expression (by cell type)
+bulk_expression_by_cell_type_patient <-
+  sample_cell_type_counts_summary$Cell_type %>% levels() %>% 
+  map(function(cur_cell_type) {
+    
+    # cur_cell_type <- "AC-like"
+    print(cur_cell_type)
+    
+    cur_cell_type_counts_summary <-
+      sample_cell_type_counts_summary %>% 
+      dplyr::filter(Cell_type == cur_cell_type) %>% droplevels()
+    
+    
+    bulk_expression_cur_cell_type <-
+      cur_cell_type_counts_summary$Sample_ID %>% unique() %>% 
+      map(function(cur_cell_type_sample) {
+        
+        # cur_cell_type_sample <- "ICB_169_Pre"
+        
+        cur_cell_type_sample_cell_id <- 
+          metadata_ICB %>% 
+          dplyr::filter(Cell_type == cur_cell_type,
+                        Sample_ID == cur_cell_type_sample) %>% 
+          dplyr::pull(Cell_ID)
+        
+        
+        # create a pseudobulk
+        # exp_mat_cell_type_sample <- log2(rowMeans(exp_mat_all_tpm[, cur_cell_type_sample_cell_id]) + 1)
+        exp_mat_cell_type_sample <- log2(rowMeans(exp_mat_all_tpm_HLA[, cur_cell_type_sample_cell_id] %>% as.matrix()) + 1)
+        
+      }) %>% do.call(cbind, .)
+    
+    colnames(bulk_expression_cur_cell_type) <- cur_cell_type_counts_summary$Sample_ID %>% unique()
+    
+    
+    bulk_expression_cur_cell_type_by_patient <-
+      bulk_expression_cur_cell_type %>% 
+      reshape2::melt(varnames = c("gene_name", "Sample_ID"), value.name = "Exp") %>% 
+      dplyr::left_join(sample_cell_type_counts_summary %>% 
+                         dplyr::filter(Cell_type == cur_cell_type) %>% droplevels() %>% 
+                         dplyr::select(Rx, Patient_ID, Sample_ID) %>% unique(), by = "Sample_ID") %>% 
+      dplyr::group_by(Rx, Patient_ID, gene_name) %>% 
+      dplyr::summarise(mean_exp = mean(Exp), .groups = "drop") %>% 
+      dplyr::mutate(Cell_type = cur_cell_type)
+    
+    
+    return(bulk_expression_cur_cell_type_by_patient)
+    
+  }) %>% do.call(rbind, .) %>% 
+  dplyr::mutate_at(c("gene_name"), as.character)
+  
+bulk_expression_by_cell_type_patient %>% dim() # 2108442  5
+
+
+
+# (A.3) calculate the bulk expression (malignant cells)
+bulk_expression_malignant_by_sample <-
+  sample_cell_type_counts_summary %>% 
+  dplyr::filter(malignant_group == "Malignant") %>% droplevels() %>% 
+  dplyr::pull(Sample_ID) %>% unique() %>% 
+  map(function(cur_cell_type_sample) {
+    
+    # cur_cell_type_sample <- "ICB_142_Pre"
+    
+    cur_cell_type_sample_cell_id <- 
+      metadata_ICB %>% 
+      dplyr::filter(malignant_group == "Malignant",
+                    Sample_ID == cur_cell_type_sample) %>% 
+      dplyr::pull(Cell_ID)
+    
+    
+    # create a pseudobulk
+    exp_mat_cell_type_sample <- log2(rowMeans(exp_mat_all_tpm_HLA[, cur_cell_type_sample_cell_id] %>% as.matrix()) + 1)
+    
+  }) %>% do.call(cbind, .)
+
+bulk_expression_malignant_by_sample %>% dim() # 8859  25
+
+colnames(bulk_expression_malignant_by_sample) <- sample_cell_type_counts_summary %>% dplyr::filter(malignant_group == "Malignant") %>% dplyr::pull(Sample_ID) %>% unique()
+
+
+bulk_expression_malignant_by_patient <-
+  bulk_expression_malignant_by_sample %>% 
+  reshape2::melt(varnames = c("gene_name", "Sample_ID"), value.name = "Exp") %>% 
+  dplyr::left_join(sample_cell_type_counts_summary %>% 
+                     dplyr::filter(malignant_group == "Malignant") %>% droplevels() %>% 
+                     dplyr::select(Rx, Patient_ID, Sample_ID) %>% unique(), by = "Sample_ID") %>% 
+  dplyr::group_by(Rx, Patient_ID, gene_name) %>% 
+  dplyr::summarise(mean_exp = mean(Exp), .groups = "drop") %>% 
+  dplyr::mutate(Cell_type = "Malignant") %>% 
+  dplyr::mutate_at(c("gene_name"), as.character)
+
+bulk_expression_malignant_by_patient %>% dim() # 186039  5
+
+    
+bulk_expression_by_cell_type_grouped_patient <-
+  rbind(bulk_expression_malignant_by_patient,
+        bulk_expression_by_cell_type_patient %>% dplyr::filter(Cell_type %!in% c("AC-like", "MES-like", "GPC-like", "NPC-like", "OPC-like", "Malignant (ND)"))) %>% 
+  dplyr::mutate_at(c("Cell_type"), factor, levels = c("Malignant", "Oligodendrocytes", "Myeloid", "Astrocyte", "Neurons", "Endothelial", "Pericytes", "T-cell", "NK-cell"))
+
+bulk_expression_by_cell_type_grouped_patient %>% dim() # 1452876  5
+
+
+
+# (B) analyze MHC bulk expression across MALIGNANT cells
+bulk_expression_by_cell_type_patient_malignant <-
+  sample_cell_type_counts_summary %>% 
+  dplyr::filter(malignant_group == "Malignant") %>% droplevels() %>% 
+  dplyr::pull(Cell_type) %>% levels() %>% 
+  map(function(cur_cell_type) {
+    
+    # cur_cell_type <- "MES-like"
+    print(cur_cell_type)
+    
+    cur_cell_type_counts_summary <-
+      sample_cell_type_counts_summary %>% 
+      dplyr::filter(Cell_type == cur_cell_type) %>% droplevels()
+    
+    
+    bulk_expression_cur_cell_type <-
+      cur_cell_type_counts_summary$Sample_ID %>% unique() %>% 
+      map(function(cur_cell_type_sample) {
+        
+        # cur_cell_type_sample <- "ICB_142_Pre"
+        
+        cur_cell_type_sample_cell_id <- 
+          metadata_ICB %>% 
+          dplyr::filter(Cell_type == cur_cell_type,
+                        Sample_ID == cur_cell_type_sample) %>% 
+          dplyr::pull(Cell_ID)
+        
+        
+        # create a pseudobulk
+        # exp_mat_cell_type_sample <- log2(rowMeans(exp_mat_all_tpm[, cur_cell_type_sample_cell_id]) + 1)
+        exp_mat_cell_type_sample <- log2(rowMeans(exp_mat_all_tpm_HLA[, cur_cell_type_sample_cell_id] %>% as.matrix()) + 1)
+        
+      }) %>% do.call(cbind, .)
+    
+    colnames(bulk_expression_cur_cell_type) <- cur_cell_type_counts_summary$Sample_ID %>% unique()
+    
+    
+    bulk_expression_cur_cell_type_by_patient <-
+      bulk_expression_cur_cell_type %>% 
+      reshape2::melt(varnames = c("gene_name", "Sample_ID"), value.name = "Exp") %>% 
+      dplyr::left_join(sample_cell_type_counts_summary %>% 
+                         dplyr::filter(Cell_type == cur_cell_type) %>% droplevels() %>% 
+                         dplyr::select(Rx, Patient_ID, Sample_ID) %>% unique(), by = "Sample_ID") %>% 
+      dplyr::group_by(Rx, Patient_ID, gene_name) %>% 
+      dplyr::summarise(mean_exp = mean(Exp), .groups = "drop") %>% 
+      dplyr::mutate(Cell_type = cur_cell_type)
+    
+    
+    return(bulk_expression_cur_cell_type_by_patient)
+    
+  }) %>% do.call(rbind, .) %>% 
+  dplyr::mutate_at(c("gene_name"), as.character)
+  
+bulk_expression_by_cell_type_patient_malignant %>% dim() # 841605  5
+
+
+
+
+# (C) analyze MHC bulk expression across MALIGNANT cells
+
+# center the bulk expression gene expression
+bulk_expression_by_cell_type_patient_malignant_centered_matrix <-
+  bulk_expression_by_cell_type_patient_malignant %>% 
+  dplyr::mutate(rx_patient_cell_type_id = paste0(Rx, "*", Patient_ID, "*", Cell_type)) %>% 
+  tidyr::pivot_wider(id_cols = c("gene_name"), names_from = "rx_patient_cell_type_id", values_from = "mean_exp") %>% 
+  tibble::column_to_rownames(var = "gene_name") %>% scalop::rowcenter()
+
+bulk_expression_by_cell_type_patient_malignant_centered <-
+  bulk_expression_by_cell_type_patient_malignant_centered_matrix %>% 
+  reshape2::melt(varnames = c("gene_name", "rx_patient_cell_type_id"), value.name = "mean_exp") %>% 
+  dplyr::mutate_at(c("gene_name"), as.character) %>% 
+  tidyr::separate(col = "rx_patient_cell_type_id", into = c("Rx", "Patient_ID", "Cell_type"), sep = "[*]")
+
+
+
+# (C.1) look at the specific gene expression across cell types
+average_exp_HLA_by_cell_type_malignant <-
+  bulk_expression_by_cell_type_patient_malignant_centered %>% 
+  dplyr::left_join(HLA_GENES, by = "gene_name", relationship = "many-to-many") %>% 
+  dplyr::filter(!is.na(HLA_class)) %>% 
+  dplyr::group_by(Rx, HLA_class, gene_name, Cell_type) %>% 
+  dplyr::summarize(mean_exp_cell_type = mean(mean_exp), .groups = "drop")
+  
+
+cell_types_by_HLA_class_I_pre_malignant_order <- 
+  average_exp_HLA_by_cell_type_malignant %>% 
+  dplyr::filter(Rx == "Pre-ICB",
+                HLA_class == "MHC class I") %>% 
+  dplyr::group_by(Cell_type) %>% 
+  dplyr::summarize(mean_exp_cell_type_all_genes = mean(mean_exp_cell_type)) %>% 
+  dplyr::arrange(mean_exp_cell_type_all_genes) %>% 
+  tibble::rowid_to_column(var = "cell_type_order")  
+  
+
+average_exp_HLA_by_cell_type_malignant %>% 
+  dplyr::left_join(cell_types_by_HLA_class_I_pre_malignant_order, by = "Cell_type") %>% 
+  dplyr::filter(Cell_type != "Malignant (ND)") %>% 
+  ggplot(aes(x = reorder(Cell_type, cell_type_order), y = fct_rev(gene_name))) + 
+  geom_tile(aes(fill = mean_exp_cell_type)) +
+  facet_grid(cols = vars(fct_rev(Rx)), rows = vars(HLA_class), scales = "free", space = "free") +
+  scale_fill_gradient2(low = HEATMAP_LOW_VALUE_C, high = HEATMAP_HIGH_VALUE_C, mid = "white", # breaks = c(-1,0,1),
+                       guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) + 
+  labs(x = "", y = "MHC genes", fill = "Relative\nexpression") + 
+  default_theme_xrot_90_border()
+
+
+
+# (C.2) look at the specific gene expression across cell types and patients
+bulk_expression_by_cell_type_patient_malignant_centered %>% 
+  dplyr::left_join(HLA_GENES, by = "gene_name", relationship = "many-to-many") %>% 
+  dplyr::filter(!is.na(HLA_class),
+                Rx == "Pre-ICB",
+                Cell_type != "Malignant (ND)") %>% 
+  ggplot(aes(x = Patient_ID, y = reorder(gene_name, -gene_order))) + 
+  geom_tile(aes(fill = mean_exp)) +
+  facet_grid(cols = vars(fct_rev(Cell_type)), rows = vars(HLA_class), scales = "free", space = "free") +
+  scale_fill_gradient2(low = HEATMAP_LOW_VALUE_C, high = HEATMAP_HIGH_VALUE_C, mid = "white", # breaks = c(-1,0,1),
+                       guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) + 
+  labs(subtitle = "Pre-ICB", x = "", y = "MHC genes", fill = "Relative\nexpression") + 
+  default_theme_xrot_90_border()
+
+
+
+
+# (C.3) score the bulk expression by the HLA signatures
+sig_score_HLA_by_cell_type_patient_malignant <-
+  bulk_expression_by_cell_type_patient_malignant_centered_matrix %>% 
+  scalop::sigScores(sigs = split(HLA_GENES$gene_name, HLA_GENES$HLA_class), expr.center = FALSE) %>% as.matrix() %>% 
+  reshape2::melt(varnames = c("rx_patient_cell_type_id", "HLA_class"), value.name = "sig_score") %>% 
+  tidyr::separate(col = "rx_patient_cell_type_id", into = c("Rx", "Patient_ID", "Cell_type"), sep = "[*]") 
+  
+
+sig_score_HLA_by_cell_type_patient_pre_malignant_summary <-
+  sig_score_HLA_by_cell_type_patient_malignant %>% 
+  dplyr::left_join(cell_types_by_HLA_class_I_pre_malignant_order %>% 
+                     dplyr::select(Cell_type, cell_type_order), by = "Cell_type") %>% 
+  dplyr::filter(!is.na(HLA_class),
+                Rx == "Pre-ICB")
+
+
+
+# (C.3.1) compare the HLA expression between different cell types
+# STATISTICS
+sig_score_HLA_by_cell_type_patient_pre_malignant_stats <-
+  sig_score_HLA_by_cell_type_patient_pre_malignant_summary %>% 
+  dplyr::mutate(Cell_type = str_replace(string = Cell_type, pattern = "-", replacement = "_")) %>% 
+  dplyr::group_by(HLA_class) %>% 
+  # rstatix::anova_test(sig_score ~ Cell_type) %>% # SIGNIFICANT
+  rstatix::tukey_hsd(sig_score ~ Cell_type) %>%
+  dplyr::filter(p.adj < 0.05) %>% 
+  dplyr::mutate(group1 = str_replace(string = group1, pattern = "_", replacement = "-"),
+                group2 = str_replace(string = group2, pattern = "_", replacement = "-"))
+
+
+
+sig_score_HLA_by_cell_type_patient_pre_malignant_summary %>% 
+  dplyr::filter(Cell_type != "Malignant (ND)") %>% 
+  ggplot(aes(x = reorder(Cell_type, cell_type_order), y = sig_score)) + 
+  geom_point(position = position_jitter(height = 0, seed = 0), size = 5, alpha = 0.8, color = "grey75") + 
+  geom_boxplot(aes(fill = Cell_type), alpha = 0.8, linewidth = 0.8, outlier.shape = NA) +
+  facet_grid(rows = vars(HLA_class), scales = "free_y", space = "free_y") + 
+  scale_fill_manual(values = c(GBM_STATE_AC_C, GBM_STATE_GPC_C, GBM_STATE_MES_C, GBM_STATE_NPC_C, GBM_STATE_OPC_C)) + 
+  labs(subtitle = "Pre-ICB",
+       x = "", y = "HLA score", fill = "") + 
+  default_theme_xrot_90_border() +
+  theme(legend.key.spacing.y = unit(10,"pt"))
+
+```
