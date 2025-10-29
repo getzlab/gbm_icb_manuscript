@@ -2,7 +2,7 @@
 
 Code for generating figures in the Glioblastoma ICB manuscript of Ghannam et al.:
 
-> "Tumor Transcriptional Subtype is a Major Axis of Immune Checkpoint Blockade Response in Glioblastoma". _Ghannam, Iorgulescu, Weiss, Merrell, Wu et al.(2024)_ 
+> "Tumor Transcriptional Subtype is a Major Axis of Immune Checkpoint Blockade Response in Glioblastoma". _Ghannam et al.(2025)_ 
 
 
 # Regenerating the figures:
