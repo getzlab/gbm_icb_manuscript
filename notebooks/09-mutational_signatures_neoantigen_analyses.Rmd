@@ -1,0 +1,1075 @@
+---
+title: "mutational_signatures_neoantigen_analyses"
+output: html_document
+---
+
+Run this R script to generate:
+
+\* Extended Data Figure 1a
+
+\* Extended Data Figure 1b
+
+\* Extended Data Figure 1c
+
+\* Extended Data Figure 1d
+
+\* Extended Data Figure 1f
+
+\* Extended Data Figure 1g
+
+\* Extended Data Figure 1h-k
+
+\* Extended Data Figure 1l-q
+
+This script analyzes associations of TMB, mutational signatures, and neoantigen
+
+load with overall survival from ICB start.
+
+\- Compares Pre-ICB vs. Post-ICB TMB and signature composition.
+
+\- Analyzes survival based on TMB, clonal TMB, and neoantigen load.
+
+\- Tests survival associations within specific TMB strata (e.g., hypermutators).
+
+# 
+
+# Extended Data Fig. 1a
+
+Setup: Load all libraries and the unified master data table.
+
+Panel a: Generate 4-panel overview of survival, TMB, and signature burden per sample.
+
+```{r}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(patchwork)
+library(readr)
+library(scales)
+library(ggpubr)
+library(survival)
+library(survminer)
+library(Cairo)
+library(ggsci)
+library(broom)
+
+master_data_path <- '../data/mmr_neoantigen_data.csv'
+master_data <- read_csv(master_data_path, show_col_types = FALSE)
+
+patient_data <- master_data
+
+pre_samples <- patient_data %>%
+  select(
+    participant_id,
+    `ICB for Newly diagnosed`,
+    osicb,
+    SBS1_pre, SBS11_pre, SBS12_pre, SBS42_pre, SBS15_pre, Unmatched_pre,
+    TMB_latest_pre
+  ) %>%
+  rename(
+    SBS1 = SBS1_pre,
+    SBS11 = SBS11_pre,
+    SBS12 = SBS12_pre,
+    SBS42 = SBS42_pre,
+    SBS15 = SBS15_pre,
+    Unmatched = Unmatched_pre,
+    tmb = TMB_latest_pre
+  ) %>%
+  mutate(
+    sample_type = "Pre",
+    sample_id = paste0(participant_id, "_Pre")
+  )
+
+post_samples <- patient_data %>%
+  select(
+    participant_id,
+    `ICB for Newly diagnosed`,
+    osicb,
+    SBS1_post, SBS11_post, SBS12_post, SBS42_post, SBS15_post, Unmatched_post,
+    TMB_earliest_post
+  ) %>%
+  rename(
+    SBS1 = SBS1_post,
+    SBS11 = SBS11_post,
+    SBS12 = SBS12_post,
+    SBS42 = SBS42_post,
+    SBS15 = SBS15_post,
+    Unmatched = Unmatched_post,
+    tmb = TMB_earliest_post
+  ) %>%
+  mutate(
+    sample_type = "Post",
+    sample_id = paste0(participant_id, "_Post")
+  )
+
+sample_level_data <- bind_rows(pre_samples, post_samples)
+
+sig_cols <- c("SBS1", "SBS11", "SBS12", "SBS42", "SBS15", "SBS40")
+
+signatures_df_processed <- sample_level_data %>%
+  rename(
+    SBS40 = Unmatched,
+    recurrent_newlydiagnosed = `ICB for Newly diagnosed`
+  ) %>%
+  mutate(
+    across(all_of(c(sig_cols, "tmb", "osicb")), as.numeric),
+    across(all_of(sig_cols), ~ replace_na(., 0)),
+    sample_type_formatted = ifelse(sample_type == "Pre", "Pre-ICB", "Post-ICB"),
+    treatment_status = factor(paste(sample_type_formatted, recurrent_newlydiagnosed)),
+    Total_Signatures = rowSums(select(., all_of(sig_cols))),
+    across(all_of(sig_cols), list(frac = ~ . / Total_Signatures))
+  ) %>%
+  mutate(across(ends_with("_frac"), ~ if_else(is.nan(.), 0, .)))
+
+signatures_df_frac <- signatures_df_processed %>%
+  filter(!is.na(tmb))
+
+sample_order <- signatures_df_frac %>%
+  arrange(tmb) %>%
+  pull(sample_id)
+
+signatures_df_frac$sample_id <- factor(signatures_df_frac$sample_id, levels = sample_order)
+
+theme_no_x <- theme_classic() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_blank()
+  )
+
+plot_survival <- ggplot(signatures_df_frac, aes(x = sample_id, y = osicb)) +
+  geom_bar(
+    stat = "identity",   
+    fill = "#D9CF6C",
+    width = 1,
+    color = "black",
+    linewidth = 0.2 
+  ) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(y = "Survival (days)") +
+  theme_no_x +
+  theme(legend.position = "right")
+
+tmb_colors <- c(
+  "Pre-ICB Newly-diagnosed" = "#5D3A9B", 
+  "Pre-ICB Recurrent" = "#4E8542",
+  "Post-ICB Newly-diagnosed" = "#B092C8", 
+  "Post-ICB Recurrent" = "#80C27B"
+)
+
+plot_top_tmb <- ggplot(signatures_df_frac, aes(x = sample_id, y = tmb + 0.1, fill = treatment_status)) +
+  geom_bar(stat = "identity", width = 1) +
+  scale_fill_manual(name = "Diagnosis & Treatment Status", values = tmb_colors) +
+  scale_y_log10(labels = label_log()) + 
+  labs(y = "TMB (mut/Mb)\n[log10 scale]") +
+  theme_no_x +
+  theme(legend.position = "right")
+
+signatures_long_absolute <- signatures_df_frac %>%
+  select(sample_id, all_of(sig_cols)) %>%
+  pivot_longer(cols = -sample_id, names_to = "Signature", values_to = "Absolute_Count")
+
+signature_levels <- c("SBS11", "SBS42", "SBS15", "SBS1", "SBS12", "SBS40")
+signatures_long_absolute$Signature <- factor(signatures_long_absolute$Signature, levels = signature_levels)
+
+signature_colors <- c(
+  "SBS11" = "#D55E00", 
+  "SBS42" = "#E69F00", 
+  "SBS15" = "#009E73",
+  "SBS1" = "#56B4E9", 
+  "SBS12" = "#9467BD", 
+  "SBS40" = "#C5E2EC"
+)
+
+plot_middle_stacked_absolute <- ggplot(signatures_long_absolute, aes(x = sample_id, y = Absolute_Count, fill = Signature)) +
+  geom_bar(stat = "identity", position = "stack", width = 1) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_fill_manual(name = "Signature", values = signature_colors) +
+  labs(y = "Absolute Burden") +
+  theme_no_x +
+  theme(legend.position = "right")
+
+signatures_long_relative <- signatures_df_frac %>%
+  select(sample_id, ends_with("_frac")) %>%
+  pivot_longer(cols = -sample_id, names_to = "Signature", values_to = "Fraction") %>%
+  mutate(Signature = gsub("_frac", "", Signature))
+
+signatures_long_relative$Signature <- factor(signatures_long_relative$Signature, levels = signature_levels)
+
+plot_bottom_stacked_relative <- ggplot(signatures_long_relative, aes(x = sample_id, y = Fraction, fill = Signature)) +
+  geom_bar(stat = "identity", position = "stack", width = 1) +
+  scale_y_continuous(labels = scales::percent, expand = c(0, 0)) +
+  labs(x = "Samples (ordered by TMB)", y = "Relative Proportion") +
+  scale_fill_manual(name = "Signature", values = signature_colors) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_blank(),   
+    axis.ticks.x = element_blank(),  
+    axis.line.x = element_blank(),   
+    legend.position = "right"
+  )
+
+final_plot <- plot_survival / plot_top_tmb / plot_middle_stacked_absolute / plot_bottom_stacked_relative +
+  plot_layout(heights = c(2, 3, 3, 4), guides = 'collect')
+
+final_plot_annotated <- final_plot + plot_annotation(
+  title = "Survival, TMB, and Signature Contributions Per Sample"
+)
+
+print(final_plot_annotated)
+```
+
+# Extended Data Fig. 1b
+
+Panel b: Plot longitudinal changes in signature proportions for paired samples.
+
+```{r}
+merged_wide_df <- master_data
+
+pre_data <- merged_wide_df %>%
+  filter(!is.na(SBS1_pre)) %>%
+  select(
+    participant_id,
+    diagnosis_status = `ICB for Newly diagnosed`,
+    SBS1 = SBS1_pre, 
+    SBS11 = SBS11_pre, 
+    SBS12 = SBS12_pre,
+    SBS42 = SBS42_pre, 
+    SBS15 = SBS15_pre, 
+    Unmatched = Unmatched_pre
+  ) %>%
+  mutate(sample_type = "Pre-ICB")
+
+post_data <- merged_wide_df %>%
+  filter(!is.na(SBS1_post)) %>%
+  select(
+    participant_id,
+    diagnosis_status = `ICB for Newly diagnosed`,
+    SBS1 = SBS1_post, 
+    SBS11 = SBS11_post, 
+    SBS12 = SBS12_post,
+    SBS42 = SBS42_post, 
+    SBS15 = SBS15_post, 
+    Unmatched = Unmatched_post
+  ) %>%
+  mutate(sample_type = "Post-ICB")
+
+sample_df <- bind_rows(pre_data, post_data)
+
+all_sig_cols <- c("SBS1", "SBS11", "SBS12_15", "SBS42", "SBS40")
+
+signatures_df_frac <- sample_df %>%
+  rename(SBS40 = Unmatched) %>%
+  mutate(across(c(SBS1, SBS11, SBS12, SBS15, SBS42, SBS40), as.numeric)) %>%
+  mutate(across(c(SBS1, SBS11, SBS12, SBS15, SBS42, SBS40), ~ replace_na(., 0))) %>%
+  mutate(SBS12_15 = SBS12 + SBS15) %>%
+  select(-SBS12, -SBS15) %>%
+  mutate(
+    Total_Signatures = rowSums(select(., all_of(all_sig_cols))),
+    across(all_of(all_sig_cols), list(frac = ~ . / Total_Signatures))
+  ) %>%
+  mutate(across(ends_with("_frac"), ~ if_else(is.nan(.) | is.infinite(.), 0, .)))
+
+paired_df <- signatures_df_frac %>%
+  group_by(participant_id) %>%
+  filter(n() == 2) %>%
+  ungroup()
+
+n_total_paired <- length(unique(paired_df$participant_id))
+
+n_by_diagnosis <- paired_df %>%
+  select(participant_id, diagnosis_status) %>%
+  distinct() %>%
+  count(diagnosis_status)
+
+base_plot_data <- paired_df %>%
+  select(participant_id, diagnosis_status, sample_type, ends_with("_frac")) %>%
+  pivot_longer(
+    cols = ends_with("_frac"),
+    names_to = "Signature",
+    values_to = "Proportion",
+    names_pattern = "(.*)_frac"
+  ) %>%
+  mutate(
+    sample_type = factor(sample_type, levels = c("Pre-ICB", "Post-ICB")),
+    Signature = factor(Signature, levels = c("SBS1", "SBS11", "SBS12_15", "SBS42", "SBS40"))
+  )
+
+stats_summary_combined <- base_plot_data %>%
+  pivot_wider(id_cols = c(participant_id, Signature), names_from = sample_type, values_from = Proportion) %>%
+  group_by(Signature) %>%
+  summarize(
+    p_value = wilcox.test(`Pre-ICB`, `Post-ICB`, paired = TRUE, exact = FALSE)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(p_label = paste("p =", scales::pvalue(p_value, accuracy = 0.001)))
+
+plot_combined <- ggplot(base_plot_data, aes(x = sample_type, y = Proportion)) +
+  geom_line(aes(group = participant_id), color = "grey50", linetype = "dashed", alpha = 0.8) +
+  geom_boxplot(
+    aes(fill = sample_type),
+    width = 0.6,
+    alpha = 0.7,
+    outlier.color = "black",
+    outlier.size = 1.5
+  ) +
+  facet_wrap(~ Signature, scales = "free_y", ncol = 5) +
+  geom_text(data = stats_summary_combined, aes(x = 1.5, y = Inf, label = p_label), vjust = 1.5, size = 3.5) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_manual(values = c("Pre-ICB" = "#0072B2", "Post-ICB" = "#D55E00")) +
+  labs(
+    title = "Longitudinal Change in SBS Signature Proportions (All Paired Samples)",
+    subtitle = sprintf("SBS12 and SBS15 combined; Proportions relative to total of all detected signatures\nn = %d paired patients", n_total_paired),
+    x = "Timepoint", y = "Relative Proportion"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "grey90", color = "black"),
+    strip.text = element_text(face = "bold", size = 10),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(plot_combined)
+```
+
+# Extended Data Fig. 1c
+
+Panel c: Plot paired pre-ICB vs. post-ICB TMB on a log scale.
+
+```{r}
+PRE_LABEL <- "Pre-ICB"
+POST_LABEL <- "Post-ICB"
+
+PALETTE_COLORS <- c("#0072B2", "#D55E00")
+names(PALETTE_COLORS) <- c(PRE_LABEL, POST_LABEL)
+
+full_data <- master_data
+
+paired_tmb_long <- full_data %>%
+  select(participant_id, TMB_latest_pre, TMB_earliest_post) %>%
+  filter(!is.na(TMB_latest_pre) & !is.na(TMB_earliest_post)) %>%
+  pivot_longer(
+    cols = c(TMB_latest_pre, TMB_earliest_post),
+    names_to = "timepoint",
+    values_to = "tmb"
+  ) %>%
+  mutate(
+    timepoint = if_else(timepoint == "TMB_latest_pre", PRE_LABEL, POST_LABEL),
+    timepoint = factor(timepoint, levels = c(PRE_LABEL, POST_LABEL)),
+    tmb = tmb + 0.1
+  )
+
+n_paired <- n_distinct(paired_tmb_long$participant_id)
+cat("Number of patients with paired TMB data:", n_paired, "\n")
+
+paired_tmb_plot <- ggplot(paired_tmb_long, aes(x = timepoint, y = tmb, fill = timepoint, color = timepoint)) +
+  geom_line(
+    aes(group = participant_id), 
+    color = "grey60",
+    linewidth = 0.5,
+    alpha = 0.8
+  ) +
+  geom_boxplot(
+    width = 0.35,
+    alpha = 0.4,
+    outlier.shape = NA,
+    color = "black",
+    linewidth = 0.5
+  ) +
+  geom_point(
+    size = 2.5,
+    alpha = 0.9,
+    shape = 21,
+    stroke = 0.5,
+    color = "white"
+  ) +
+  stat_compare_means(
+    method = "wilcox.test",
+    paired = TRUE,
+    label.x = 1.5,
+    label = "p.format",
+    size = 5
+  ) +
+  scale_y_log10(
+    breaks = trans_breaks("log10", function(x) 10^x),
+    labels = trans_format("log10", math_format(10^.x))
+  ) +
+  scale_fill_manual(values = PALETTE_COLORS) +
+  scale_color_manual(values = PALETTE_COLORS) +
+  labs(
+    title = "Tumor Mutation Burden Dynamics with ICB",
+    subtitle = sprintf("Paired Analysis of Pre- and Post-Treatment Samples (n = %d)", n_paired),
+    x = NULL,
+    y = expression("TMB + 0.1 (mutations/Mb, log"[10]*" scale)")
+  ) +
+  theme_bw(base_size = 16) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+    plot.subtitle = element_text(hjust = 0.5, size = 12, margin = margin(b = 15)),
+    axis.text = element_text(color = "black", size = 12),
+    axis.title.y = element_text(face = "bold", size = 14),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(color = "black", linewidth = 1)
+  )
+
+print(paired_tmb_plot)
+
+summary_stats <- paired_tmb_long %>%
+  group_by(timepoint) %>%
+  summarize(
+    n = n(),
+    mean_tmb = mean(tmb - 0.1, na.rm = TRUE),
+    median_tmb = median(tmb - 0.1, na.rm = TRUE),
+    sd_tmb = sd(tmb - 0.1, na.rm = TRUE),
+    min_tmb = min(tmb - 0.1, na.rm = TRUE),
+    max_tmb = max(tmb - 0.1, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(summary_stats)
+
+wide_tmb <- paired_tmb_long %>%
+  select(participant_id, timepoint, tmb) %>%
+  pivot_wider(names_from = timepoint, values_from = tmb)
+
+wilcox_result <- wilcox.test(
+  wide_tmb[[PRE_LABEL]], 
+  wide_tmb[[POST_LABEL]], 
+  paired = TRUE
+)
+
+cat("\nPaired Wilcoxon test p-value:", wilcox_result$p.value, "\n")
+```
+
+# Extended Data Fig. 1d
+
+Panel d: Visualize TMB and signature profiles for pre-ICB hypermutator patients.
+
+```{r}
+participant_data <- master_data
+
+sig_cols <- c("SBS1", "SBS11", "SBS12", "SBS42", "SBS15", "SBS40")
+
+hypermutator_participants <- participant_data %>%
+  filter(TMB_latest_pre > 10 & !is.na(TMB_latest_pre)) %>%
+  rename(
+    tmb = TMB_latest_pre,
+    recurrent_newlydiagnosed = `ICB for Newly diagnosed`, 
+    SBS1 = SBS1_pre,
+    SBS11 = SBS11_pre,
+    SBS12 = SBS12_pre,
+    SBS42 = SBS42_pre,
+    SBS15 = SBS15_pre,
+    SBS40 = Unmatched_pre 
+  ) %>%
+  select(
+    participant_id, 
+    recurrent_newlydiagnosed,
+    tmb,
+    all_of(sig_cols) 
+  )
+
+signatures_df_frac <- hypermutator_participants %>%
+  mutate(across(all_of(c(sig_cols, "tmb")), as.numeric)) %>%
+  mutate(across(all_of(sig_cols), ~ replace_na(., 0))) %>%
+  mutate(
+    treatment_status = factor(recurrent_newlydiagnosed),
+    Total_Signatures = rowSums(select(., all_of(sig_cols))),
+    across(all_of(sig_cols), list(frac = ~ . / Total_Signatures)),
+    x_label = participant_id
+  ) %>%
+  mutate(across(ends_with("_frac"), ~ if_else(is.nan(.), 0, .)))
+
+sample_order <- signatures_df_frac %>%
+  arrange(tmb) %>%
+  pull(x_label)
+
+signatures_df_frac$x_label <- factor(signatures_df_frac$x_label, levels = sample_order)
+
+theme_top_plots <- theme_classic() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_blank(),
+    legend.position = "right" 
+  )
+
+diagnosis_colors <- c("Newly-diagnosed" = "#5D3A9B", "Recurrent" = "#4E8542")
+
+plot_top_tmb <- ggplot(signatures_df_frac, aes(x = x_label, y = tmb + 0.1, fill = treatment_status)) +
+  geom_bar(stat = "identity", width = 1) +
+  scale_fill_manual(name = "Diagnosis Status", values = diagnosis_colors) +
+  scale_y_log10(labels = scales::label_number()) +   
+  labs(y = "TMB (mut/Mb)\n[log10 scale]") + 
+  theme_top_plots 
+
+signatures_long_absolute <- signatures_df_frac %>%
+  select(x_label, all_of(sig_cols)) %>%
+  pivot_longer(cols = -x_label, names_to = "Signature", values_to = "Absolute_Count")
+
+signature_levels <- c("SBS11", "SBS42", "SBS15", "SBS1", "SBS12", "SBS40")
+signatures_long_absolute$Signature <- factor(signatures_long_absolute$Signature, levels = signature_levels)
+signature_colors <- c("SBS11" = "#D55E00", "SBS42" = "#E69F00", "SBS15" = "#009E73",
+                      "SBS1" = "#56B4E9", "SBS12" = "#9467BD", "SBS40" = "#C5E2EC")
+
+plot_middle_stacked_absolute <- ggplot(signatures_long_absolute, aes(x = x_label, y = Absolute_Count, fill = Signature)) +
+  geom_bar(stat = "identity", position = "stack", width = 1) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_fill_manual(name = "Signature", values = signature_colors) +
+  labs(y = "Absolute Burden") +
+  theme_top_plots
+
+signatures_long_relative <- signatures_df_frac %>%
+  select(x_label, ends_with("_frac")) %>%
+  pivot_longer(cols = -x_label, names_to = "Signature", values_to = "Fraction") %>%
+  mutate(Signature = gsub("_frac", "", Signature))
+
+signatures_long_relative$Signature <- factor(signatures_long_relative$Signature, levels = signature_levels)
+
+plot_bottom_stacked_relative <- ggplot(signatures_long_relative, aes(x = x_label, y = Fraction, fill = Signature)) +
+  geom_bar(stat = "identity", position = "stack", width = 1) +
+  scale_y_continuous(labels = scales::percent, expand = c(0, 0)) +
+  labs(x = "Participants (ordered by TMB)", y = "Relative Proportion") +
+  scale_fill_manual(name = "Signature", values = signature_colors) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+    axis.line.x = element_blank(), 
+    legend.position = "right" 
+  )
+
+final_plot <- plot_top_tmb / plot_middle_stacked_absolute / plot_bottom_stacked_relative +
+  plot_layout(heights = c(3, 3, 4), guides = 'collect') 
+
+final_plot_annotated <- final_plot + plot_annotation(
+  title = "TMB and Signatures for Pre-ICB Hypermutator Participants (TMB_latest_pre > 10)"
+)
+
+print(final_plot_annotated)
+```
+
+# Extended Data Fig. 1f
+
+Panel f: Plot paired signature composition (pre/post) for patient GBM-131.
+
+```{r}
+full_data <- master_data
+
+sig_names <- c("SBS1", "SBS11", "SBS12", "SBS42", "SBS15", "Unmatched")
+
+cols_to_select <- c(paste0(sig_names, "_pre"), paste0(sig_names, "_post"))
+
+plot_data <- full_data %>%
+  filter(participant_id == "GBM-131") %>%
+  select(any_of(cols_to_select)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Signature_Time",
+    values_to = "Absolute_Count"
+  ) %>%
+  extract(Signature_Time, into = c("Signature", "Timepoint"), regex = "^(.*)_(pre|post)$") %>%
+  mutate(Absolute_Count = as.numeric(replace_na(Absolute_Count, 0))) %>%
+  group_by(Timepoint) %>%
+  mutate(Proportion = Absolute_Count / sum(Absolute_Count)) %>%
+  ungroup() %>%
+  mutate(
+    Timepoint = factor(toupper(Timepoint), levels = c("PRE", "POST")),
+    Signature = factor(Signature, levels = rev(sig_names))
+  )
+
+signature_colors <- c(
+  "SBS1" = "#56B4E9", "SBS11" = "#D55E00", "SBS12" = "#CC79A7",
+  "SBS42" = "#E69F00", "SBS15" = "#009E73", "Unmatched" = "grey70"
+)
+
+stacked_plot <- ggplot(plot_data, aes(x = Timepoint, y = Proportion, fill = Signature)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.8, color = "black") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), expand = c(0, 0)) +
+  scale_fill_manual(values = signature_colors, name = "Signature") +
+  labs(
+    title = "Signature Composition for Patient GBM-131",
+    subtitle = "Pre- vs. Post-ICB (Averaged)",
+    x = "Timepoint",
+    y = "Relative Abundance"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+print(stacked_plot)
+```
+
+# Extended Data Fig. 1g
+
+Panel g: Generate Kaplan-Meier plot for hypermutators, stratified by MMR signature.
+
+```{r}
+full_data <- master_data
+
+base_data <- full_data %>%
+  mutate(
+    osicb = as.numeric(osicb),
+    os_years = osicb / 365.25,
+    status = if_else(Deceased == "Deceased", 1, 0),
+    TMB_latest_pre = as.numeric(TMB_latest_pre),
+    SBS12_pre = as.numeric(tidyr::replace_na(SBS12_pre, 0)),
+    SBS15_pre = as.numeric(tidyr::replace_na(SBS15_pre, 0)),
+    mmr_signature_absolute = SBS12_pre + SBS15_pre
+  ) %>%
+  filter(!is.na(osicb) & !is.na(status) & osicb > 0) %>%
+  filter(!is.na(TMB_latest_pre))
+
+hypermutator_threshold <- 10
+
+hypermutator_data <- base_data %>%
+  filter(TMB_latest_pre > hypermutator_threshold)
+
+cat("Number of hypermutators (TMB >", hypermutator_threshold, "mut/Mb):", nrow(hypermutator_data), "\n")
+
+median_mmr_value <- median(hypermutator_data$mmr_signature_absolute, na.rm = TRUE)
+cat("Median MMR signature (SBS12+15) cutoff:", median_mmr_value, "\n\n")
+
+data_mmr <- hypermutator_data %>%
+  mutate(
+    mmr_group = factor(
+      if_else(mmr_signature_absolute >= median_mmr_value, "High MMR (>= median)", "Low MMR (< median)"),
+      levels = c("Low MMR (< median)", "High MMR (>= median)")
+    )
+  )
+
+cat("Group sizes (using '>=' cutoff):\n")
+print(table(data_mmr$mmr_group))
+cat("\n")
+
+fit_mmr <- survfit(Surv(os_years, status) ~ mmr_group, data = data_mmr)
+
+km_plot_mmr <- ggsurvplot(
+  fit_mmr, data = data_mmr,
+  pval = TRUE,
+  conf.int = FALSE,
+  risk.table = TRUE,
+  palette = "npg",
+  legend.title = "MMR Signature",
+  legend.labs = c("Low (< Median)", "High (>= Median)"),
+  title = "Hypermutators (TMB > 10): By MMR Signature (SBS12+15, >= Median)",
+  xlab = "Time (years)",
+  xlim = c(0, 4),
+  break.time.by = 1,
+  ggtheme = theme_classic(base_size = 12) +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+)
+
+print(km_plot_mmr)
+
+print(summary(fit_mmr)$table)
+cat("\n")
+
+cox_model <- coxph(Surv(os_years, status) ~ mmr_group, data = data_mmr)
+print(summary(cox_model))
+cat("\n")
+```
+
+# Extended Data Fig. 1h-k
+
+Panel h-k: Run focused survival analysis (KM plots) for MMR signature within TMB strata.
+
+```{r}
+full_data <- master_data
+
+base_prepared_data <- full_data %>%
+  mutate(
+    osicb = as.numeric(osicb),
+    os_years = osicb / 365.25,
+    status = if_else(Deceased == "Deceased", 1, 0),
+    TMB_latest_pre = as.numeric(TMB_latest_pre),
+    SBS11_pre = as.numeric(SBS11_pre),
+    SBS12_pre = as.numeric(SBS12_pre),
+    SBS15_pre = as.numeric(SBS15_pre),
+    mmr_signature_absolute = as.numeric(tidyr::replace_na(SBS12_pre, 0)) +
+                             as.numeric(tidyr::replace_na(SBS15_pre, 0))
+  ) %>%
+  filter(!is.na(os_years) & os_years > 0 & !is.na(status))
+
+threshold_log <- data.frame(
+  Cohort = character(),
+  TMB_Stratum = character(),
+  Metric = character(),
+  Threshold_Value = numeric(),
+  N_in_Stratum = integer(),
+  stringsAsFactors = FALSE
+)
+
+run_focused_analysis <- function(cohort_data, cohort_name) {
+
+  median_tmb_val <- median(cohort_data$TMB_latest_pre, na.rm = TRUE)
+  tmb_quartiles <- quantile(cohort_data$TMB_latest_pre, probs = c(0.25, 0.75), na.rm = TRUE)
+  q1_tmb <- tmb_quartiles[1]
+  q3_tmb <- tmb_quartiles[2]
+  
+  threshold_log <<- rbind(threshold_log, data.frame(Cohort=cohort_name, TMB_Stratum="Full Cohort", Metric="TMB Median", Threshold_Value=median_tmb_val, N_in_Stratum=nrow(cohort_data)))
+  threshold_log <<- rbind(threshold_log, data.frame(Cohort=cohort_name, TMB_Stratum="Full Cohort", Metric="TMB Q1", Threshold_Value=q1_tmb, N_in_Stratum=nrow(cohort_data)))
+  threshold_log <<- rbind(threshold_log, data.frame(Cohort=cohort_name, TMB_Stratum="Full Cohort", Metric="TMB Q3", Threshold_Value=q3_tmb, N_in_Stratum=nrow(cohort_data)))
+
+  low_tmb_median_subgroup <- cohort_data %>% filter(TMB_latest_pre < median_tmb_val)
+  high_tmb_median_subgroup <- cohort_data %>% filter(TMB_latest_pre >= median_tmb_val)
+  bottom_tmb_quartile_subgroup <- cohort_data %>% filter(TMB_latest_pre <= q1_tmb)
+  top_tmb_quartile_subgroup <- cohort_data %>% filter(TMB_latest_pre >= q3_tmb)
+
+  analyze_subgroup <- function(subgroup_data, subgroup_name) {
+    cox_continuous <- NULL
+    km_plot <- NULL
+    log_rank_pval <- NULL
+
+    if (nrow(subgroup_data) > 1 && sum(subgroup_data$status) > 0) {
+      cox_continuous <- coxph(Surv(os_years, status) ~ mmr_signature_absolute, data = subgroup_data)
+    }
+
+    median_mmr_subgroup <- median(subgroup_data$mmr_signature_absolute, na.rm = TRUE)
+    
+    threshold_log <<- rbind(threshold_log, data.frame(Cohort=cohort_name, TMB_Stratum=subgroup_name, Metric="Nested MMR Median", Threshold_Value=median_mmr_subgroup, N_in_Stratum=nrow(subgroup_data)))
+
+    subgroup_with_mmr_group <- subgroup_data %>%
+      mutate(mmr_group = factor(
+        if_else(mmr_signature_absolute >= median_mmr_subgroup, "High MMR", "Low MMR"),
+        levels = c("Low MMR", "High MMR")
+      ))
+
+    if (n_distinct(subgroup_with_mmr_group$mmr_group) > 1) {
+      fit_km <- survfit(Surv(os_years, status) ~ mmr_group, data = subgroup_with_mmr_group)
+      log_rank_pval <- surv_pvalue(fit_km, data = subgroup_with_mmr_group)$pval
+
+      max_years <- ceiling(max(subgroup_with_mmr_group$os_years, na.rm = TRUE))
+
+      n_counts <- subgroup_with_mmr_group %>% count(mmr_group)
+      low_n <- n_counts %>% filter(mmr_group == "Low MMR") %>% pull(n)
+      high_n <- n_counts %>% filter(mmr_group == "High MMR") %>% pull(n)
+      
+      if(length(low_n) == 0) low_n <- 0
+      if(length(high_n) == 0) high_n <- 0
+
+      km_plot <- ggsurvplot(
+        fit_km,
+        data = subgroup_with_mmr_group,
+        pval = TRUE,
+        conf.int = FALSE,
+        risk.table = TRUE,
+        risk.table.height = 0.25,
+        palette = "npg",
+        legend.title = "",
+        legend.labs = c(paste0("Low MMR\n(n = ", low_n, ")"),
+                        paste0("High MMR\n(n = ", high_n, ")")),
+        title = paste0(subgroup_name, " (n=", nrow(subgroup_with_mmr_group), ")"),
+        xlab = "Years from ICB start",
+        ylab = "Overall Survival Probability",
+        xlim = c(0, max_years),
+        break.time.by = 1,
+        ggtheme = theme_classic(base_size = 12) +
+          theme(plot.title = element_text(hjust = 0.5, face = "bold")),
+        fontsize = 4
+      )
+    }
+    return(list(cox_continuous = cox_continuous, km_plot = km_plot, log_rank_pval = log_rank_pval))
+  }
+
+  analysis_low_median <- analyze_subgroup(low_tmb_median_subgroup, "Low TMB (by Median)")
+  analysis_high_median <- analyze_subgroup(high_tmb_median_subgroup, "High TMB (by Median)")
+  analysis_bottom_quartile <- analyze_subgroup(bottom_tmb_quartile_subgroup, "Bottom TMB Quartile")
+  analysis_top_quartile <- analyze_subgroup(top_tmb_quartile_subgroup, "Top TMB Quartile")
+
+  if (!is.null(analysis_low_median$km_plot)) {
+    print(analysis_low_median$km_plot)
+  }
+  if (!is.null(analysis_high_median$km_plot)) {
+    print(analysis_high_median$km_plot)
+  }
+  if (!is.null(analysis_bottom_quartile$km_plot)) {
+    print(analysis_bottom_quartile$km_plot)
+  }
+  if (!is.null(analysis_top_quartile$km_plot)) {
+    print(analysis_top_quartile$km_plot)
+  }
+
+  print_summary <- function(analysis_result, subgroup_name) {
+    cat(sprintf("\n--- Results for %s ---\n", subgroup_name))
+    if (!is.null(analysis_result$log_rank_pval)) {
+      cat(sprintf("Nested Log-Rank (High vs Low MMR): p = %.2g\n", analysis_result$log_rank_pval))
+    } else {
+      cat("Nested Log-Rank (High vs Low MMR): Test not run.\n")
+    }
+    if (!is.null(analysis_result$cox_continuous)) {
+      s_cont <- summary(analysis_result$cox_continuous)
+      cat(sprintf("Continuous MMR Cox: HR = %.3f, p = %.2g\n",
+                  s_cont$conf.int[,"exp(coef)"],
+                  s_cont$coefficients[,"Pr(>|z|)"]))
+    } else {
+      cat("Continuous MMR Cox: Model not run.\n")
+    }
+  }
+
+  print_summary(analysis_low_median, "Low TMB (by Median) Subgroup")
+  print_summary(analysis_high_median, "High TMB (by Median) Subgroup")
+  print_summary(analysis_bottom_quartile, "Bottom TMB Quartile Subgroup")
+  print_summary(analysis_top_quartile, "Top TMB Quartile Subgroup")
+}
+
+full_pre_icb_cohort <- base_prepared_data %>%
+  filter(!is.na(TMB_latest_pre))
+
+tmz_naive_cohort <- base_prepared_data %>%
+  filter(
+    !is.na(TMB_latest_pre) &
+    `ICB for Newly diagnosed` == "Newly-diagnosed"
+  )
+
+run_focused_analysis(full_pre_icb_cohort, "Full Pre-ICB Cohort")
+run_focused_analysis(tmz_naive_cohort, "TMZ-Naive (Newly Diagnosed) Cohort")
+
+if(nrow(threshold_log) > 0) {
+  threshold_log_formatted <- threshold_log %>%
+    mutate(Threshold_Value = format(round(Threshold_Value, 3), nsmall = 3))
+  print(threshold_log_formatted, row.names = FALSE)
+} else {
+  cat("No threshold data was logged.\n")
+}
+```
+
+# Extended Data Fig. 1l-q
+
+Panel l-q: Generate violin, KM, and forest plots for TMB and neoantigen load vs. survival.
+
+```{r}
+full_data <- master_data
+
+variables_to_analyze_tmb <- c("TMB_latest_pre", "TMB_clonal")
+
+tmb_cohort_full <- full_data %>%
+  filter(!is.na(TMB_latest_pre) & !is.na(os)) %>%
+  mutate(
+    os_months = as.numeric(os) / 30.44,
+    os_years = os_months / 12,
+    status = if_else(Deceased == "Deceased", 1, 0),
+    survival_group = factor(
+      if_else(os >= 547, "LTS (>= 18 mo)", "STS (< 18 mo)"),
+      levels = c("STS (< 18 mo)", "LTS (>= 18 mo)")
+    ),
+    across(all_of(variables_to_analyze_tmb), ~ as.numeric(tidyr::replace_na(., 0)))
+  ) %>%
+  filter(!is.na(status) & os_months > 0)
+
+tmb_cohort_adjusted <- tmb_cohort_full %>%
+  rename(MGMT_status = `MGMT methylated Y/N`) %>%
+  filter(MGMT_status %in% c("Methylated", "Unmethylated")) %>%
+  mutate(
+    MGMT_status = factor(MGMT_status, levels = c("Unmethylated", "Methylated")),
+    `ICB for Newly diagnosed` = factor(`ICB for Newly diagnosed`, 
+                                       levels = c("Newly-diagnosed", "Recurrent"))
+  )
+
+cat("=== TMB COHORT (Panel l-q) ===\n")
+cat("Total patients for Violin/KM plots:", nrow(tmb_cohort_full), "\n")
+cat("Total patients for Adjusted Forest plot:", nrow(tmb_cohort_adjusted), "\n\n")
+
+violin_plot_data_tmb <- tmb_cohort_full %>%
+  select(survival_group, 
+         "Overall TMB" = TMB_latest_pre, 
+         "Clonal TMB" = TMB_clonal) %>%
+  pivot_longer(cols = -survival_group, names_to = "Metric", values_to = "Value") %>%
+  mutate(Value = Value + 0.1)
+
+violin_plots_tmb <- ggplot(violin_plot_data_tmb, aes(x = survival_group, y = Value, fill = survival_group)) +
+  geom_violin(trim = FALSE, alpha = 0.8) +
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+  geom_jitter(width = 0.05, alpha = 0.6, size = 1.5, height = 0) +
+  facet_wrap(~ Metric, scales = "free_y", ncol = 2) +
+  stat_compare_means(method = "wilcox.test", label = "p.format", label.x = 1.5, size = 5) +
+  scale_y_log10() +
+  scale_fill_manual(values = c("STS (< 18 mo)" = "#E69F00", "LTS (>= 18 mo)" = "#56B4E9")) +
+  labs(title = "TMB Distribution by Survival Outcome", 
+       x = "", 
+       y = "TMB Value + 0.1 (log10 scale)") +
+  theme_classic(base_size = 14) +
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        strip.background = element_rect(fill = "grey90", linetype = "blank"),
+        strip.text = element_text(face = "bold"))
+
+print(violin_plots_tmb)
+
+create_km_plot <- function(data, variable, title) {
+  median_val <- median(data[[variable]], na.rm = TRUE)
+  df <- data %>% 
+    mutate(group = factor(if_else(.data[[variable]] >= median_val, "High", "Low"), 
+                          levels = c("Low", "High")))
+  
+  fit <- survfit(Surv(os_years, status) ~ group, data = df)
+  
+  ggsurvplot(fit, data = df, 
+             pval = TRUE, 
+             conf.int = FALSE, 
+             risk.table = FALSE,
+             palette = c("grey70", "#E64B35FF"),
+             legend.title = "Group",
+             legend.labs = c(paste0("Low (n=", sum(df$group == "Low"), ")"), 
+                             paste0("High (n=", sum(df$group == "High"), ")")),
+             title = title,
+             xlab = "Time (Years)",
+             break.time.by = 1,
+             ggtheme = theme_classic(base_size = 12) +
+               theme(plot.title = element_text(hjust = 0.5, face = "bold"), 
+                     legend.position = "top"))
+}
+
+km_overall_tmb <- create_km_plot(tmb_cohort_full, "TMB_latest_pre", "Overall TMB")
+km_clonal_tmb <- create_km_plot(tmb_cohort_full, "TMB_clonal", "Clonal TMB")
+
+combined_km_tmb <- km_overall_tmb$plot + km_clonal_tmb$plot
+print(combined_km_tmb)
+
+cox_model_overall_tmb <- coxph(Surv(os_months, status) ~ TMB_latest_pre + MGMT_status + `ICB for Newly diagnosed`, 
+                               data = tmb_cohort_adjusted)
+cox_model_clonal_tmb <- coxph(Surv(os_months, status) ~ TMB_clonal + MGMT_status + `ICB for Newly diagnosed`, 
+                              data = tmb_cohort_adjusted)
+
+forest_data_tmb <- bind_rows(
+  broom::tidy(cox_model_overall_tmb, exponentiate = TRUE, conf.int = TRUE) %>% 
+    filter(term == "TMB_latest_pre"),
+  broom::tidy(cox_model_clonal_tmb, exponentiate = TRUE, conf.int = TRUE) %>% 
+    filter(term == "TMB_clonal")
+) %>%
+  mutate(
+    term = case_when(
+      term == "TMB_latest_pre" ~ "Overall TMB",
+      term == "TMB_clonal" ~ "Clonal TMB"
+    ),
+    p_label = paste("p =", scales::pvalue(p.value, accuracy = 0.01)),
+    term = factor(term, levels = c("Clonal TMB", "Overall TMB"))
+  )
+
+forest_plot_tmb <- ggplot(forest_data_tmb, aes(x = estimate, y = term)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey70") +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.15, size = 1) +
+  geom_point(size = 5, shape = 18, color = "#E64B35FF") +
+  geom_text(aes(label = p_label, x = Inf), hjust = 1.1, size = 4) +
+  scale_x_log10() +
+  labs(
+    title = "Adjusted Hazard Ratio for TMB Components",
+    subtitle = "Adjusted for MGMT Status and Diagnosis Stage",
+    x = "Hazard Ratio (log scale)", y = ""
+  ) +
+  theme_classic(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(forest_plot_tmb)
+
+cat("TMB analysis complete.\n\n")
+
+variables_to_analyze_neo <- c("total_pre_neoantigen_burden", "clonal_neoantigen_burden")
+
+neo_cohort_full <- full_data %>%
+  filter(!is.na(total_pre_neoantigen_burden) & !is.na(os)) %>%
+  mutate(
+    os_months = as.numeric(os) / 30.44,
+    os_years = os_months / 12,
+    status = if_else(Deceased == "Deceased", 1, 0),
+    survival_group = factor(
+      if_else(os >= 547, "LTS (>= 18 mo)", "STS (< 18 mo)"),
+      levels = c("STS (< 18 mo)", "LTS (>= 18 mo)")
+    ),
+    across(all_of(variables_to_analyze_neo), ~ as.numeric(tidyr::replace_na(., 0)))
+  ) %>%
+  filter(!is.na(status) & os_months > 0)
+
+neo_cohort_adjusted <- neo_cohort_full %>%
+  rename(MGMT_status = `MGMT methylated Y/N`) %>%
+  filter(MGMT_status %in% c("Methylated", "Unmethylated")) %>%
+  mutate(
+    MGMT_status = factor(MGMT_status, levels = c("Unmethylated", "Methylated")),
+    `ICB for Newly diagnosed` = factor(`ICB for Newly diagnosed`, 
+                                       levels = c("Newly-diagnosed", "Recurrent"))
+  )
+
+cat("=== NEOANTIGEN COHORT (Panel l-q) ===\n")
+cat("Total patients for Violin/KM plots:", nrow(neo_cohort_full), "\n")
+cat("Total patients for Adjusted Forest plot:", nrow(neo_cohort_adjusted), "\n\n")
+
+violin_plot_data_neo <- neo_cohort_full %>%
+  select(survival_group, 
+         "Overall Neoantigen" = total_pre_neoantigen_burden,
+         "Clonal Neoantigen" = clonal_neoantigen_burden) %>%
+  pivot_longer(cols = -survival_group, names_to = "Metric", values_to = "Value") %>%
+  mutate(Value = Value + 0.1)
+
+violin_plots_neo <- ggplot(violin_plot_data_neo, aes(x = survival_group, y = Value, fill = survival_group)) +
+  geom_violin(trim = FALSE, alpha = 0.8) +
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+  geom_jitter(width = 0.05, alpha = 0.6, size = 1.5, height = 0) +
+  facet_wrap(~ Metric, scales = "free_y", ncol = 2) +
+  stat_compare_means(method = "wilcox.test", label = "p.format", label.x = 1.5, size = 5) +
+  scale_y_log10() +
+  scale_fill_manual(values = c("STS (< 18 mo)" = "#009E73", "LTS (>= 18 mo)" = "#CC79A7")) +
+  labs(title = "Neoantigen Distribution by Survival", 
+       x = "", 
+       y = "Neoantigen Burden + 0.1 (log10 scale)") +
+  theme_classic(base_size = 14) +
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        strip.background = element_rect(fill = "grey90", linetype = "blank"),
+        strip.text = element_text(face = "bold"))
+
+print(violin_plots_neo)
+
+km_overall_neo <- create_km_plot(neo_cohort_full, "total_pre_neoantigen_burden", "Overall Neoantigen")
+km_clonal_neo <- create_km_plot(neo_cohort_full, "clonal_neoantigen_burden", "Clonal Neoantigen")
+
+combined_km_neo <- km_overall_neo$plot + km_clonal_neo$plot
+print(combined_km_neo)
+
+cox_model_overall_neo <- coxph(Surv(os_months, status) ~ total_pre_neoantigen_burden + MGMT_status + `ICB for Newly diagnosed`, 
+                               data = neo_cohort_adjusted)
+cox_model_clonal_neo <- coxph(Surv(os_months, status) ~ clonal_neoantigen_burden + MGMT_status + `ICB for Newly diagnosed`, 
+                              data = neo_cohort_adjusted)
+
+forest_data_neo <- bind_rows(
+  broom::tidy(cox_model_overall_neo, exponentiate = TRUE, conf.int = TRUE) %>% 
+    filter(term == "total_pre_neoantigen_burden"),
+  broom::tidy(cox_model_clonal_neo, exponentiate = TRUE, conf.int = TRUE) %>% 
+    filter(term == "clonal_neoantigen_burden")
+) %>%
+  mutate(
+    term = case_when(
+      term == "total_pre_neoantigen_burden" ~ "Overall Neoantigen",
+      term == "clonal_neoantigen_burden" ~ "Clonal Neoantigen"
+    ),
+    p_label = paste("p =", scales::pvalue(p.value, accuracy = 0.01)),
+    term = factor(term, levels = c("Clonal Neoantigen", "Overall Neoantigen"))
+  )
+
+forest_plot_neo <- ggplot(forest_data_neo, aes(x = estimate, y = term)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey70") +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.15, size = 1) +
+  geom_point(size = 5, shape = 18, color = "#00A087FF") +
+  geom_text(aes(label = p_label, x = Inf), hjust = 1.1, size = 4) +
+  scale_x_log10() +
+  labs(
+    title = "Adjusted Hazard Ratio for Neoantigen Burden",
+    subtitle = "Adjusted for MGMT Status and Diagnosis Stage",
+    x = "Hazard Ratio (log scale)", y = ""
+  ) +
+  theme_classic(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(forest_plot_neo)
+```
