@@ -4,8 +4,8 @@ output: html_document
 ---
 
 Run this notebook to generate
-\* Figure 2c
-\* Extended Data Figure 5a-j
+* Figure 2c
+* Extended Data Figure 5a-j
 
 This script analyzes HLA Class I/II protein expression and T-cell density, examining their associations with Verhaak transcriptional subtypes.
 - mIF data: Per-cell HLA-I and HLA-II protein expression.
