@@ -1,0 +1,866 @@
+---
+title: "bulk_transcriptional_classifiers_survival"
+output: html_document
+---
+
+Run this notebook to generate
+
+* Figure 2a, 2b
+
+* Extended Data Figure 4c, 4d, 4e, 4f, 4g, 4h, 4j
+
+* Extended Data Figure 6a-d, 6e, 6f, 6g
+
+This script analyzes bulk RNA-seq transcriptional subtypes and their association with survival, genomic classifiers, and ICB treatment covariates.
+
+- ICB Cohort: Verhaak ssGSEA scores and survival.
+
+- ICB Cohort: MES vs. PN survival stratified by MGMT and DEX.
+
+- ICB vs. GLASS: Comparative survival analysis (Cox Forest Plots).
+
+- Concordance: Jaccard and Sankey plots comparing 5 classifiers.
+
+# Load data
+
+```{r}
+library(tidyverse)
+library(survival)
+library(survminer)
+library(RColorBrewer)
+library(ggalluvial)
+library(mclust)
+library(broom)
+library(patchwork)
+library(readxl)
+
+zenodo_dir_path <- "../data/bulk_transcriptional_classifiers_survival"
+
+icb_data_raw <- read_tsv(file.path(zenodo_dir_path, "icb_cohort_unified.tsv"), show_col_types = FALSE)
+glass_data_raw <- read_tsv(file.path(zenodo_dir_path, "glass_cohort_clinical_subtypes.tsv"), show_col_types = FALSE)
+sc_scores <- read_tsv(file.path(zenodo_dir_path, "sc_classifier_scores.tsv"), show_col_types = FALSE)
+verhaak_scores <- read_excel(file.path(zenodo_dir_path, "bulk_verhaak_ssgsea_scores.xlsx"), skip = 1)
+```
+
+# Data pre-processing
+
+Prepares all data objects required for the subsequent plotting chunks.
+
+```{r}
+#Object 1: Verhaak Proportions (ExtDataFig 4c)
+verhaak_plotdata <- icb_data_raw %>%
+  select(participant_id, starts_with("VERHAAK_GLIOBLASTOMA_")) %>%
+  pivot_longer(
+    cols = -participant_id,
+    names_to = "score_subtype_full",
+    values_to = "score"
+  ) %>%
+  mutate(
+    timepoint = if_else(str_detect(score_subtype_full, "_post$"), "PostTx", "PreTx"),
+    score_subtype = str_remove_all(score_subtype_full, "VERHAAK_GLIOBLASTOMA_|_pre|_post")
+  ) %>%
+  filter(!is.na(score)) %>%
+  mutate(sample_key = paste0(participant_id, "_", timepoint))
+
+min_verhaak_score <- min(verhaak_plotdata$score, na.rm = TRUE)
+if (is.finite(min_verhaak_score) && min_verhaak_score < 0) {
+  verhaak_plotdata <- verhaak_plotdata %>%
+    mutate(score = score + abs(min_verhaak_score))
+}
+
+ranking_order <- verhaak_plotdata %>%
+  group_by(sample_key) %>%
+  mutate(proportion = score / sum(score, na.rm = TRUE)) %>%
+  ungroup() %>%
+  filter(score_subtype == "MESENCHYMAL") %>%
+  arrange(desc(proportion)) %>%
+  pull(sample_key)
+
+verhaak_plotdata$sample_key <- factor(verhaak_plotdata$sample_key, levels = ranking_order)
+verhaak_plotdata$score_subtype <- factor(verhaak_plotdata$score_subtype, levels = c("MESENCHYMAL", "CLASSICAL", "NEURAL", "PRONEURAL"))
+
+#Object 2: MES/PN vs MGMT (ExtDataFig 4d)
+analysis_df_4d <- icb_data_raw %>%
+  mutate(
+    osicb = as.numeric(as.character(osicb)),
+    osicb_years = osicb / 365.25
+  ) %>%
+  filter(
+    verhaak_subtype_pre %in% c("MESENCHYMAL", "PRONEURAL"),
+    `MGMT methylated Y/N` %in% c("Methylated", "Unmethylated"),
+    !is.na(osicb_years),
+    !is.na(Deceased)
+  ) %>%
+  mutate(
+    event_status = ifelse(Deceased == "Deceased", 1, 0),
+    MGMT_status_factor = factor(`MGMT methylated Y/N`, levels = c("Unmethylated", "Methylated")),
+    subtype_factor = factor(verhaak_subtype_pre, levels = c("PRONEURAL", "MESENCHYMAL"))
+  )
+
+df_unmethylated <- analysis_df_4d %>% filter(MGMT_status_factor == "Unmethylated")
+df_methylated <- analysis_df_4d %>% filter(MGMT_status_factor == "Methylated")
+
+
+#Object 3: MES/non-MES by Time Filter (ExtDataFig 4e, 4f)
+custom_theme_4e <- theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour = "black")
+  )
+
+df_recurrent_base <- icb_data_raw %>%
+  filter(`ICB for Newly diagnosed` == "Recurrent") %>%
+  select(
+    survival_time_days = osicb,
+    status = Deceased,
+    subtype = verhaak_subtype_pre,
+    collection_days = collection_date_icb_pre
+  ) %>%
+  mutate(
+    event = ifelse(status == "Deceased", 1, 0),
+    survival_time_days = as.numeric(survival_time_days),
+    survival_years = survival_time_days / 365.25,
+    days_pre_icb = abs(as.numeric(collection_days))
+  ) %>%
+  mutate(subtype_binary = ifelse(subtype == "MESENCHYMAL", "MES", "non-MES")) %>%
+  filter(!is.na(survival_years) & !is.na(event) & !is.na(subtype_binary) & !is.na(days_pre_icb)) %>%
+  mutate(subtype_binary = relevel(factor(subtype_binary), ref = "non-MES"))
+
+df_newly_diagnosed_base <- icb_data_raw %>%
+  filter(`ICB for Newly diagnosed` == "Newly-diagnosed") %>%
+  select(
+    survival_time_days = osicb,
+    status = Deceased,
+    subtype = verhaak_subtype_pre,
+    collection_days = collection_date_icb_pre
+  ) %>%
+   mutate(
+    event = ifelse(status == "Deceased", 1, 0),
+    survival_time_days = as.numeric(survival_time_days),
+    survival_years = survival_time_days / 365.25,
+    days_pre_icb = abs(as.numeric(collection_days))
+  ) %>%
+  mutate(subtype_binary = ifelse(subtype == "MESENCHYMAL", "MES", "non-MES")) %>%
+  filter(!is.na(survival_years) & !is.na(event) & !is.na(subtype_binary) & !is.na(days_pre_icb))
+  
+if ("non-MES" %in% df_newly_diagnosed_base$subtype_binary) {
+  df_newly_diagnosed_base <- df_newly_diagnosed_base %>%
+    mutate(subtype_binary = relevel(factor(subtype_binary), ref = "non-MES"))
+} else {
+  df_newly_diagnosed_base <- df_newly_diagnosed_base %>%
+    mutate(subtype_binary = factor(subtype_binary))
+}
+
+
+df_all_cohort_base <- rbind(df_recurrent_base, df_newly_diagnosed_base)
+max_time_years_4e <- ceiling(max(df_all_cohort_base$survival_years, na.rm = TRUE))
+
+#Object 4: Subtype by Dexamethasone (ExtDataFig 4g)
+analysis_data_4g <- icb_data_raw %>%
+  rename(
+    verhaak = verhaak_subtype_pre,
+    dex_start_raw = `Dex at start of ICB`
+  ) %>%
+  mutate(
+    osicb = as.numeric(as.character(osicb)),
+    binary_dex_icb = factor(
+      case_when(
+        dex_start_raw %in% c("No", "0") ~ "No",
+        dex_start_raw %in% c("2-4mg dex", "<2mg dex", ">4mg dex", "1", "2", "3") ~ "Yes",
+        TRUE ~ NA_character_
+      ), levels = c("No", "Yes")),
+    mes = factor(
+      case_when(
+        verhaak == "MESENCHYMAL" ~ "Mesenchymal",
+        verhaak %in% c("PRONEURAL", "CLASSICAL", "NEURAL") ~ "Non-Mesenchymal",
+        TRUE ~ NA_character_
+      ),
+      levels = c("Non-Mesenchymal", "Mesenchymal")
+    ),
+    mvp = factor(
+      case_when(
+        verhaak == "MESENCHYMAL" ~ "Mesenchymal",
+        verhaak == "PRONEURAL"   ~ "Proneural",
+        TRUE                     ~ NA_character_
+      ),
+      levels = c("Proneural", "Mesenchymal")
+    ),
+    sticy = osicb / 365.25,
+    se    = ifelse(Deceased == "Deceased", 1, 0)
+  )
+
+#Object 5 & 6: HLA ssGSEA Survival (ExtDataFig 4j, Fig 2b)
+data_hla_surv <- icb_data_raw %>%
+  mutate(osicb_years = as.numeric(osicb) / 365.25)
+
+# --- Object 7: MES vs PN Survival (Fig 2a) ---
+data_fig2a <- icb_data_raw %>%
+  mutate(osicb_years = as.numeric(osicb) / 365.25) %>%
+  filter(
+    verhaak_subtype_pre %in% c("MESENCHYMAL", "PRONEURAL"),
+    !is.na(osicb_years),
+    !is.na(Deceased)
+  ) %>%
+  mutate(
+    subtype_factor = factor(verhaak_subtype_pre, levels = c("PRONEURAL", "MESENCHYMAL"))
+  )
+
+#Object 8 & 9: Concordance & Sankey (ExtDataFig 6a-d, 6e)
+data_pre_6e <- icb_data_raw %>%
+  select(participant_id,
+         Verhaak = verhaak_subtype_pre,
+         Neftel = Neftel_dominant_pre,      
+         Garofano = Garofano_dominant_pre,  
+         Nomura = Nomura_dominant_pre,      
+         Couturier = Couturier_dominant_pre 
+  )
+data_post_6e <- icb_data_raw %>%
+  select(participant_id,
+         Verhaak = verhaak_subtype_post,
+         Neftel = Neftel_dominant_post,    
+         Garofano = Garofano_dominant_post, 
+         Nomura = Nomura_dominant_post,     
+         Couturier = Couturier_dominant_post 
+  )
+combined_data_6e <- bind_rows(data_pre_6e, data_post_6e)
+
+#Object 10: ssGSEA vs scScore (ExtDataFig 6f)
+comparison_6f <- sc_scores %>%
+  as_tibble %>%
+  left_join(verhaak_scores, by = 'sample_id') %>%
+  mutate(across(where(is.numeric), ~ scale(.))) %>%
+  pivot_longer(cols = -c(sample_id, participant_id, starts_with("VERHAAK")), names_to = 'single_cell', values_to = 'single_cell_score') %>%
+  pivot_longer(cols = starts_with('VERHAAK_GLIO'), names_to = 'ssGSEA', values_to = 'ssGSEA_score') %>%
+  mutate(
+    ssGSEA = str_remove(ssGSEA, 'VERHAAK_GLIOBLASTOMA_'),
+    ssGSEA = factor(ssGSEA, levels = c('MESENCHYMAL', 'PRONEURAL', 'NEURAL', 'CLASSICAL'))
+  )
+comparison_subset_6f <- comparison_6f %>%
+  dplyr::filter(
+    ssGSEA %in% c('PRONEURAL', 'MESENCHYMAL'),
+    single_cell %in% c('Neftel_MES1', 'Neftel_NPC1', 'Garofano_GPM', 'Garofano_NEU',
+                       'Nomura_MP_6_MES', 'Nomura_MP_2_OPC', 'Nomura_MP_7_NPC',
+                       'Couturier_MES1', 'Couturier_OPC')
+  ) %>%
+  mutate(single_cell = factor(
+    single_cell,
+    levels = c('Neftel_MES1', 'Neftel_NPC1', 'Garofano_GPM', 'Garofano_NEU',
+               'Nomura_MP_6_MES', 'Nomura_MP_2_OPC', 'Nomura_MP_7_NPC',
+               'Couturier_MES1', 'Couturier_OPC')
+  ))
+
+#Object 11: Cox Forest Plots (ExtDataFig 6g)
+icb_data_6g <- icb_data_raw %>%
+  filter(!is.na(verhaak_subtype_pre)) %>%
+  mutate(
+    time_years = as.numeric(osicb) / 365.25,
+    event = ifelse(Deceased == "Deceased", 1, 0)
+  ) %>%
+  filter(!is.na(time_years), time_years > 0, !is.na(event), !is.na(`ICB for Newly diagnosed`))
+
+glass_data_6g <- glass_data_raw %>%
+  mutate(
+    time_years = sample_overall_survival_days / 365.25,
+    event = ifelse(case_vital_status == "dead", 1, 0)
+  ) %>%
+  filter(!is.na(time_years), time_years > 0, !is.na(event), !is.na(primary_or_recurrent))
+
+comparisons_icb_6g <- tribble(
+  ~classifier, ~comparison_name,     ~mes_group_logic,                                      ~control_group_logic,
+  "Verhaak",   "MES vs. non-MES",    quo(verhaak_subtype_pre == "MESENCHYMAL"),             quo(verhaak_subtype_pre != "MESENCHYMAL"),
+  "Verhaak",   "MES vs. Proneural",  quo(verhaak_subtype_pre == "MESENCHYMAL"),             quo(verhaak_subtype_pre == "PRONEURAL"),
+  "Neftel",    "MES vs. non-MES",    quo(grepl("MES", Neftel_dominant_pre)),                 quo(!grepl("MES", Neftel_dominant_pre)),
+  "Neftel",    "MES1 vs. NPC1",      quo(Neftel_dominant_pre == "MES1"),                    quo(Neftel_dominant_pre == "NPC1"),
+  "Garofano",  "GPM vs. non-GPM",    quo(Garofano_dominant_pre == "GPM"),                   quo(Garofano_dominant_pre != "GPM"),
+  "Garofano",  "GPM vs. PPR",        quo(Garofano_dominant_pre == "GPM"),                   quo(Garofano_dominant_pre == "PPR"),
+  "Nomura",    "MES vs. non-MES",    quo(Nomura_dominant_pre == "MES"),                     quo(Nomura_dominant_pre != "MES"),
+  "Nomura",    "MES vs. OPC/NPC",    quo(Nomura_dominant_pre == "MES"),                     quo(Nomura_dominant_pre %in% c("OPC", "NPC")),
+  "Couturier", "MES vs. non-MES",    quo(Couturier_dominant_pre %in% c("MES1", "MES2")),   quo(!Couturier_dominant_pre %in% c("MES1", "MES2")),
+  "Couturier", "MES1 vs. OPC/NEURO", quo(Couturier_dominant_pre == "MES1"),                 quo(Couturier_dominant_pre %in% c("OPC", "NEURO"))
+)
+
+comparisons_glass_6g <- tribble(
+  ~classifier, ~comparison_name,     ~mes_logic,                                            ~control_logic,
+  "Verhaak",   "MES vs. non-MES",    quo(verhaak_subtype == "MESENCHYMAL"),                 quo(verhaak_subtype != "MESENCHYMAL"),
+  "Verhaak",   "MES vs. Proneural",  quo(verhaak_subtype == "MESENCHYMAL"),                 quo(verhaak_subtype == "PRONEURAL"),
+  "Neftel",    "MES vs. non-MES",    quo(grepl("MES", Neftel_dominant)),                    quo(!grepl("MES", Neftel_dominant)),
+  "Neftel",    "MES1 vs. NPC1",      quo(Neftel_dominant == "MES1"),                        quo(Neftel_dominant == "NPC1"),
+  "Garofano",  "GPM vs. non-GPM",    quo(Garofano_dominant == "GPM"),                       quo(Garofano_dominant != "GPM"),
+  "Garofano",  "GPM vs. PPR",        quo(Garofano_dominant == "GPM"),                       quo(Garofano_dominant == "PPR"),
+  "Nomura",    "MES vs. non-MES",    quo(Nomura_dominant == "MES"),                         quo(Nomura_dominant != "MES"),
+  "Nomura",    "MES vs. OPC/NPC",    quo(Nomura_dominant == "MES"),                         quo(Nomura_dominant %in% c("OPC", "NPC")),
+  "Couturier", "MES vs. non-MES",    quo(Couturier_dominant %in% c("MES1", "MES2")),       quo(!Couturier_dominant %in% c("MES1", "MES2")),
+  "Couturier", "MES1 vs. OPC/NEURO", quo(Couturier_dominant == "MES1"),                     quo(Couturier_dominant %in% c("OPC", "NEURO"))
+)
+```
+
+# Fig. 2a
+
+Creates the Kaplan-Meier survival curve comparing Verhaak Mesenchymal (MES) vs. Proneural (PN) pre-ICB subtypes.
+
+```{r}
+surv_object_subtype <- Surv(time = data_fig2a$osicb_years, event = data_fig2a$Deceased == "Deceased")
+km_fit_subtype <- survfit(surv_object_subtype ~ subtype_factor, data = data_fig2a)
+
+n_pn <- sum(data_fig2a$subtype_factor == "PRONEURAL")
+n_mes <- sum(data_fig2a$subtype_factor == "MESENCHYMAL")
+max_time_2a <- ceiling(max(data_fig2a$osicb_years, na.rm = TRUE)) 
+
+plot_subtype <- ggsurvplot(km_fit_subtype, data = data_fig2a,
+           pval = TRUE,
+           pval.coord = c(max_time_2a * 0.9, 0.8),
+           break.time.by = 1,
+           xlim = c(0, max_time_2a),
+           conf.int = FALSE,
+           risk.table = FALSE,
+           palette = c("#4E84C4", "#BF1E2E"), 
+           ylab = "Fraction Surviving",
+           xlab = "Years",
+           title = NULL,
+           legend.labs = c(paste0("Proneural\n(n = ", n_pn, ")"),
+                           paste0("Mesenchymal\n(n = ", n_mes, ")")),
+           ggtheme = theme_minimal() +
+             theme(panel.grid.major = element_blank(),
+                   panel.grid.minor = element_blank(),
+                   axis.line = element_line(color = "black"),
+                   axis.text = element_text(size = 12),
+                   axis.title = element_text(size = 14),
+                   legend.text = element_text(size = 12),
+                   legend.position = c(0.7, 0.8))
+)
+
+print(plot_subtype)
+```
+
+# Fig. 2b
+
+Creates the Kaplan-Meier survival curve comparing high vs. low HLA class I ssGSEA scores.
+
+```{r}
+tmb_quantiles_I <- quantile(data_hla_surv$GOCC_MHC_CLASS_I_PROTEIN_COMPLEX_pre, probs = c(0.25, 0.75), na.rm = TRUE)
+bottom_quartile_I <- tmb_quantiles_I[1]
+top_quartile_I <- tmb_quantiles_I[2]
+
+data_hla_surv$MHC_I_group <- ifelse(data_hla_surv$GOCC_MHC_CLASS_I_PROTEIN_COMPLEX_pre <= bottom_quartile_I, "Bottom Quartile",
+                           ifelse(data_hla_surv$GOCC_MHC_CLASS_I_PROTEIN_COMPLEX_pre >= top_quartile_I, "Top Quartile", NA))
+
+data_filtered_I <- data_hla_surv[!is.na(data_hla_surv$MHC_I_group), ]
+surv_object_I <- Surv(time = data_filtered_I$osicb_years, event = data_filtered_I$Deceased == "Deceased")
+km_fit_I <- survfit(surv_object_I ~ MHC_I_group, data = data_filtered_I)
+
+n_bottom_I <- sum(data_filtered_I$MHC_I_group == "Bottom Quartile")
+n_top_I <- sum(data_filtered_I$MHC_I_group == "Top Quartile")
+max_time_2b <- ceiling(max(data_filtered_I$osicb_years, na.rm = TRUE)) 
+
+plot_I <- ggsurvplot(km_fit_I, data = data_filtered_I,
+           pval = TRUE,
+           pval.coord = c(max_time_2b * 0.9, 0.8),
+           break.time.by = 1,
+           xlim = c(0, max_time_2b),
+           conf.int = FALSE,
+           risk.table = FALSE,
+           palette = c("#D1E3E1", "#9FC5C5"),
+           ylab = "Fraction Surviving",
+           xlab = "Years",
+           title = NULL,
+           legend.labs = c(paste0("HLAIlo\n(n = ", n_bottom_I, ")"),
+                           paste0("HLAIhi\n(n = ", n_top_I, ")")),
+           ggtheme = theme_minimal() +
+             theme(panel.grid.major = element_blank(),
+                   panel.grid.minor = element_blank(),
+                   axis.line = element_line(color = "black"),
+                   axis.text = element_text(size = 12),
+                   axis.title = element_text(size = 14),
+                   legend.text = element_text(size = 12),
+                   legend.position = c(0.7, 0.8))
+)
+
+print(plot_I)
+```
+
+# Extended Data Fig. 4c
+
+Generates a proportional bar plot of Verhaak ssGSEA scores for all bulk RNA-seq samples.
+
+```{r}
+ggplot(verhaak_plotdata, aes(x = sample_key, y = score, fill = score_subtype)) +
+  geom_col(position = "fill", width = 1) +
+  scale_y_continuous(labels = scales::percent, expand = c(0, 0)) +
+  scale_fill_manual(values = c("CLASSICAL"="#F69351", "MESENCHYMAL"="#d62728", "NEURAL"="#94A3AF", "PRONEURAL"="#1f77b4")) +
+  labs(title = "", subtitle = "", x = "", y="Proportion") +
+  theme_classic() +
+  theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      legend.position = "bottom",
+      plot.title = element_text(size = 20, face = "bold"),
+      plot.subtitle = element_text(size = 16),
+      axis.title = element_text(size = 16),
+      axis.text.y = element_text(size = 14),
+      legend.title = element_text(size = 14, face = "bold"),
+      legend.text = element_text(size = 12)
+  )
+```
+
+# Extended Data Fig. 4d
+
+Creates Kaplan-Meier survival curves for MES vs. PN patients, stratified by MGMT methylation status.
+
+```{r}
+custom_palette_4d <- c("#4E84C4", "#BF1E2E")
+
+n_unmethylated <- with(df_unmethylated, table(subtype_factor))
+legend_labels_unmethylated <- paste0(c("Proneural", "Mesenchymal"), " (N=", n_unmethylated, ")")
+km_fit_unmethylated <- survfit(Surv(osicb_years, event_status) ~ subtype_factor, data = df_unmethylated)
+plot_unmethylated <- ggsurvplot(
+  km_fit_unmethylated, data = df_unmethylated, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+  ggtheme = theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line()),
+  palette = custom_palette_4d, ylab = "Fraction Surviving", xlab = "Years", xlim = c(0, 4), break.x.by = 1,
+  legend.labs = legend_labels_unmethylated, title = "MGMT Unmethylated: MES vs Proneural"
+)
+
+n_methylated <- with(df_methylated, table(subtype_factor))
+legend_labels_methylated <- paste0(c("Proneural", "Mesenchymal"), " (N=", n_methylated, ")")
+km_fit_methylated <- survfit(Surv(osicb_years, event_status) ~ subtype_factor, data = df_methylated)
+plot_methylated <- ggsurvplot(
+  km_fit_methylated, data = df_methylated, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+  ggtheme = theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line()),
+  palette = custom_palette_4d, ylab = "Fraction Surviving", xlab = "Years", xlim = c(0, 4), break.x.by = 1,
+  legend.labs = legend_labels_methylated, title = "MGMT Methylated: MES vs Proneural"
+)
+
+print(plot_unmethylated)
+print(plot_methylated)
+```
+
+# Extended Data Fig. 4e
+
+Creates Kaplan-Meier survival curves for MES vs. non-MES patients (All, Newly Diagnosed, Recurrent) using all samples.
+
+```{r}
+plot_list_4e <- list()
+
+# 1. All Cohort
+df_filtered_all <- df_all_cohort_base
+surv_obj_all <- Surv(time = df_filtered_all$survival_years, event = df_filtered_all$event)
+fit_all <- survfit(surv_obj_all ~ subtype_binary, data = df_filtered_all)
+plot_list_4e$all <- ggsurvplot(
+  fit_all, data = df_filtered_all, title = "All Cohort (All Samples)", pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+  ggtheme = custom_theme_4e, palette = c("#DD8A2A", "#F5DABD"), ylab = "Fraction Surviving", xlab = "Years",
+  legend.labs = c("non-MES", "MES"), legend.title = "Subtype", xlim = c(0, max_time_years_4e), break.time.by = 1
+)
+print(plot_list_4e$all)
+
+# 2. Newly Diagnosed
+df_filtered_new <- df_newly_diagnosed_base
+surv_obj_new <- Surv(time = df_filtered_new$survival_years, event = df_filtered_new$event)
+fit_new <- survfit(surv_obj_new ~ subtype_binary, data = df_filtered_new)
+plot_list_4e$new <- ggsurvplot(
+  fit_new, data = df_filtered_new, title = "Newly Diagnosed (All Samples)", pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+  ggtheme = custom_theme_4e, palette = c("#7B648A", "#B59DC2"), ylab = "Fraction Surviving", xlab = "Years",
+  legend.labs = c("non-MES", "MES"), legend.title = "Subtype", xlim = c(0, max_time_years_4e), break.time.by = 1
+)
+print(plot_list_4e$new)
+
+# 3. Recurrent
+df_filtered_rec <- df_recurrent_base
+surv_obj_rec <- Surv(time = df_filtered_rec$survival_years, event = df_filtered_rec$event)
+fit_rec <- survfit(surv_obj_rec ~ subtype_binary, data = df_filtered_rec)
+plot_list_4e$rec <- ggsurvplot(
+  fit_rec, data = df_filtered_rec, title = "Recurrent (All Samples)", pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+  ggtheme = custom_theme_4e, palette = c("#598658", "#A5D2A2"), ylab = "Fraction Surviving", xlab = "Years",
+  legend.labs = c("non-MES", "MES"), legend.title = "Subtype", xlim = c(0, max_time_years_4e), break.time.by = 1
+)
+print(plot_list_4e$rec)
+```
+
+# Extended Data Fig. 4f
+
+Creates Kaplan-Meier survival curves for MES vs. non-MES patients, restricted to samples collected \<=35 days before ICB.
+
+```{r}
+threshold_4f <- 35
+plot_list_4f <- list()
+
+# 1. All Cohort (<= 35 days)
+df_filtered_all <- df_all_cohort_base %>% filter(days_pre_icb <= threshold_4f)
+if(nrow(df_filtered_all) > 1 && n_distinct(df_filtered_all$subtype_binary) > 1) {
+  surv_obj_all <- Surv(time = df_filtered_all$survival_years, event = df_filtered_all$event)
+  fit_all <- survfit(surv_obj_all ~ subtype_binary, data = df_filtered_all)
+  plot_list_4f$all <- ggsurvplot(
+    fit_all, data = df_filtered_all, title = "All Cohort (<= 35 Days)", pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+    ggtheme = custom_theme_4e, palette = c("#DD8A2A", "#F5DABD"), ylab = "Fraction Surviving", xlab = "Years",
+    legend.labs = c("non-MES", "MES"), legend.title = "Subtype", xlim = c(0, max_time_years_4e), break.time.by = 1
+  )
+  print(plot_list_4f$all)
+}
+
+# 2. Newly Diagnosed (<= 35 days)
+df_filtered_new <- df_newly_diagnosed_base %>% filter(days_pre_icb <= threshold_4f)
+if(nrow(df_filtered_new) > 1 && n_distinct(df_filtered_new$subtype_binary) > 1) {
+  surv_obj_new <- Surv(time = df_filtered_new$survival_years, event = df_filtered_new$event)
+  fit_new <- survfit(surv_obj_new ~ subtype_binary, data = df_filtered_new)
+  plot_list_4f$new <- ggsurvplot(
+    fit_new, data = df_filtered_new, title = "Newly Diagnosed (<= 35 Days)", pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+    ggtheme = custom_theme_4e, palette = c("#7B648A", "#B59DC2"), ylab = "Fraction Surviving", xlab = "Years",
+    legend.labs = c("non-MES", "MES"), legend.title = "Subtype", xlim = c(0, max_time_years_4e), break.time.by = 1
+  )
+  print(plot_list_4f$new)
+}
+
+# 3. Recurrent (<= 35 days)
+df_filtered_rec <- df_recurrent_base %>% filter(days_pre_icb <= threshold_4f)
+if(nrow(df_filtered_rec) > 1 && n_distinct(df_filtered_rec$subtype_binary) > 1) {
+  surv_obj_rec <- Surv(time = df_filtered_rec$survival_years, event = df_filtered_rec$event)
+  fit_rec <- survfit(surv_obj_rec ~ subtype_binary, data = df_filtered_rec)
+  plot_list_4f$rec <- ggsurvplot(
+    fit_rec, data = df_filtered_rec, title = "Recurrent (<= 35 Days)", pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+    ggtheme = custom_theme_4e, palette = c("#598658", "#A5D2A2"), ylab = "Fraction Surviving", xlab = "Years",
+    legend.labs = c("non-MES", "MES"), legend.title = "Subtype", xlim = c(0, max_time_years_4e), break.time.by = 1
+  )
+  print(plot_list_4f$rec)
+}
+```
+
+# Extended Data Fig. 4g
+
+Creates Kaplan-Meier survival curves for MES, non-MES, and PN subgroups, stratified by Dexamethasone (DEX) use.
+
+```{r}
+plot_list_4g <- list()
+
+# 1. MESENCHYMAL Subgroup
+mes_only_data <- analysis_data_4g %>% filter(mes == "Mesenchymal")
+fit_mes <- survfit(Surv(sticy, se) ~ binary_dex_icb, data = mes_only_data)
+plot_list_4g$mes <- ggsurvplot(
+  fit_mes, data = mes_only_data, pval = TRUE, title = "Mesenchymal Subgroup",
+  legend.title = "DEX Status", legend.labs = c("No DEX", "On DEX"), xlab = "Time (Years)",
+  break.time.by = 1, palette = c("#00BFC4", "#F8766D"), xlim = c(0, 4)
+)
+print(plot_list_4g$mes)
+
+# 2. NON-MESENCHYMAL Subgroup
+non_mes_data <- analysis_data_4g %>% filter(mes == "Non-Mesenchymal")
+fit_non_mes <- survfit(Surv(sticy, se) ~ binary_dex_icb, data = non_mes_data)
+plot_list_4g$non_mes <- ggsurvplot(
+  fit_non_mes, data = non_mes_data, pval = TRUE, title = "Non-Mesenchymal Subgroup",
+  legend.title = "DEX Status", legend.labs = c("No DEX", "On DEX"), xlab = "Time (Years)",
+  break.time.by = 1, palette = c("#00BFC4", "#F8766D"), xlim = c(0, 4)
+)
+print(plot_list_4g$non_mes)
+
+# 3. PRONEURAL Subgroup
+pn_only_data <- analysis_data_4g %>% filter(mvp == "Proneural")
+fit_pn <- survfit(Surv(sticy, se) ~ binary_dex_icb, data = pn_only_data)
+plot_list_4g$pn <- ggsurvplot(
+  fit_pn, data = pn_only_data, pval = TRUE, title = "Proneural Subgroup",
+  legend.title = "DEX Status", legend.labs = c("No DEX", "On DEX"), xlab = "Time (Years)",
+  break.time.by = 1, palette = c("#00BFC4", "#F8766D"), xlim = c(0, 4)
+)
+print(plot_list_4g$pn)
+```
+
+# Extended Data Fig. 4j
+
+Creates a Kaplan-Meier survival curve for patients stratified by high vs. low HLA class II ssGSEA scores.For the panel_Fig2a chunk:
+
+```{r}
+tmb_quantiles_II <- quantile(data_hla_surv$GOCC_MHC_CLASS_II_PROTEIN_COMPLEX_pre, probs = c(0.25, 0.75), na.rm = TRUE)
+bottom_quartile_II <- tmb_quantiles_II[1]
+top_quartile_II <- tmb_quantiles_II[2]
+
+data_hla_surv$MHC_II_group <- ifelse(data_hla_surv$GOCC_MHC_CLASS_II_PROTEIN_COMPLEX_pre <= bottom_quartile_II, "Bottom Quartile",
+                           ifelse(data_hla_surv$GOCC_MHC_CLASS_II_PROTEIN_COMPLEX_pre >= top_quartile_II, "Top Quartile", NA))
+
+data_filtered_II <- data_hla_surv[!is.na(data_hla_surv$MHC_II_group), ]
+surv_object_II <- Surv(time = data_filtered_II$osicb_years, event = data_filtered_II$Deceased == "Deceased")
+km_fit_II <- survfit(surv_object_II ~ MHC_II_group, data = data_filtered_II)
+
+n_bottom_II <- sum(data_filtered_II$MHC_II_group == "Bottom Quartile")
+n_top_II <- sum(data_filtered_II$MHC_II_group == "Top Quartile")
+max_time_4j <- ceiling(max(data_filtered_II$osicb_years, na.rm = TRUE)) 
+
+plot_II <- ggsurvplot(km_fit_II, data = data_filtered_II,
+           pval = TRUE,
+           pval.coord = c(max_time_4j * 0.9, 0.8),
+           break.time.by = 1,
+           xlim = c(0, max_time_4j),
+           conf.int = FALSE,
+           risk.table = FALSE,
+           palette = c("#D1E3E1", "#9FC5C5"),
+           ylab = "Fraction Surviving",
+           xlab = "Years",
+           title = NULL,
+           legend.labs = c(paste0("HLAIIlo\n(n = ", n_bottom_II, ")"),
+                           paste0("HLAIIhi\n(n = ", n_top_II, ")")),
+           ggtheme = theme_minimal() +
+             theme(panel.grid.major = element_blank(),
+                   panel.grid.minor = element_blank(),
+                   axis.line = element_line(color = "black"),
+                   axis.text = element_text(size = 12),
+                   axis.title = element_text(size = 14),
+                   legend.text = element_text(size = 12),
+                   legend.position = c(0.7, 0.8))
+)
+
+print(plot_II)
+```
+
+# Extended Data Fig. 6a-d
+
+Generates Jaccard concordance heatmaps between Verhaak and four other transcriptional classifiers.
+
+```{r}
+generate_concordance_heatmap <- function(data, other_classifier_name) {
+  df <- data %>%
+    select(participant_id, Verhaak, Other = all_of(other_classifier_name)) %>%
+    filter(!is.na(Verhaak), !is.na(Other))
+
+  jaccard_df <- df %>%
+    count(Verhaak, Other, name = "intersection_size") %>%
+    group_by(Verhaak) %>%
+    mutate(verhaak_total = sum(intersection_size)) %>%
+    ungroup() %>%
+    group_by(Other) %>%
+    mutate(other_total = sum(intersection_size)) %>%
+    ungroup() %>%
+    mutate(jaccard_index = intersection_size / (verhaak_total + other_total - intersection_size))
+
+  verhaak_order_y <- c("PRONEURAL", "NEURAL", "CLASSICAL", "MESENCHYMAL")
+  x_axis_order <- switch(other_classifier_name,
+    "Neftel"    = c("MES1", "MES2", "AC", "OPC", "NPC2", "NPC1"),
+    "Nomura"    = c("MES", "Hypoxia", "Stress", "Cilia", "GPC", "AC", "NEU-like", "OPC", "NPC"),
+    "Couturier" = c("MES1", "MES2", "HYPOXIA", "ASTRO", "OLIGO", "OPC", "NEURO"),
+    "Garofano"  = c("GPM", "MTC", "NEU", "PPR"),
+    NULL
+  )
+
+  plotting_df <- jaccard_df %>%
+    complete(Verhaak, Other, fill = list(jaccard_index = 0)) %>%
+    mutate(Verhaak = factor(Verhaak, levels = verhaak_order_y))
+
+  if (!is.null(x_axis_order)) {
+    plotting_df <- plotting_df %>%
+      mutate(Other = factor(Other, levels = x_axis_order))
+  }
+  
+  plotting_df <- plotting_df %>% filter(!is.na(Verhaak), !is.na(Other))
+
+  heatmap_plot <- ggplot(plotting_df, aes(x = Other, y = Verhaak, fill = jaccard_index)) +
+    geom_tile(color = "black", size = 0.5) +
+    scale_fill_gradient(name = "Similarity\n(Jaccard Index)", low = "white", high = "#d62728", labels = scales::percent, limits = c(0, NA), breaks = scales::pretty_breaks(n = 3), na.value = "white") +
+    coord_fixed() +
+    labs(title = paste("Verhaak vs.", other_classifier_name, "Concordance"), subtitle = "(Combined Pre- and Post-Treatment Samples)", x = paste(other_classifier_name, "Subtypes"), y = "Verhaak Subtypes") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, face = "bold", size = 12), axis.text.y = element_text(face = "bold", size = 12), axis.title = element_text(face = "bold"), plot.title = element_text(face = "bold", hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), panel.grid = element_blank())
+
+  return(heatmap_plot)
+}
+
+other_classifiers <- c("Neftel", "Garofano", "Couturier", "Nomura")
+heatmap_plots <- purrr::map(other_classifiers, ~generate_concordance_heatmap(combined_data_6e, .x))
+names(heatmap_plots) <- other_classifiers
+
+# Print all 4 plots
+print(heatmap_plots$Neftel)
+print(heatmap_plots$Couturier)
+print(heatmap_plots$Garofano)
+print(heatmap_plots$Nomura)
+```
+
+# Extended Data Fig. 6e
+
+Generates a Sankey diagram showing the concordance and flow between five transcriptional classifiers.
+
+```{r}
+prefixed_data <- combined_data_6e %>%
+  filter(!is.na(Verhaak) & !is.na(Neftel) & !is.na(Couturier) & !is.na(Nomura) & !is.na(Garofano)) %>%
+  mutate(
+    Neftel_unique    = paste0("Neftel_", Neftel),
+    Couturier_unique = paste0("Couturier_", Couturier),
+    Garofano_unique  = paste0("Garofano_", Garofano),
+    Nomura_unique    = paste0("Nomura_", Nomura)
+  )
+
+verhaak_order <- c("MESENCHYMAL", "CLASSICAL", "NEURAL", "PRONEURAL")
+neftel_order_unique <- paste0("Neftel_", c("MES1", "MES2", "AC", "OPC", "NPC2", "NPC1"))
+couturier_order_unique <- paste0("Couturier_", c("MES1", "MES2", "HYPOXIA", "ASTRO", "OLIGO", "OPC", "NEURO"))
+nomura_order_unique <- paste0("Nomura_", c("MES", "Hypoxia", "Stress", "Cilia", "GPC", "AC", "NEU-like", "OPC", "NPC"))
+garofano_order_unique <- paste0("Garofano_", c("GPM", "MTC", "NEU", "PPR"))
+
+verhaak_palette <- c("MESENCHYMAL"="#BF1E2E", "CLASSICAL"="#4E84C4", "NEURAL"="#B3E2CD", "PRONEURAL"="#C6B4E1")
+
+plot_data_6e <- prefixed_data %>%
+  count(Verhaak, Neftel_unique, Couturier_unique, Garofano_unique, Nomura_unique, name = "n") %>%
+  mutate(
+    Verhaak          = factor(Verhaak, levels = verhaak_order),
+    Neftel_unique    = factor(Neftel_unique, levels = neftel_order_unique),
+    Couturier_unique = factor(Couturier_unique, levels = couturier_order_unique),
+    Garofano_unique  = factor(Garofano_unique, levels = garofano_order_unique),
+    Nomura_unique    = factor(Nomura_unique, levels = nomura_order_unique)
+  )
+
+sankey_plot <- ggplot(data = plot_data_6e,
+                      aes(y = n, 
+                          axis1 = Verhaak, 
+                          axis2 = Neftel_unique, 
+                          axis3 = Couturier_unique, 
+                          axis4 = Garofano_unique, 
+                          axis5 = Nomura_unique,
+                          fill = Verhaak)) +
+  geom_alluvium(width = 0.4, alpha = 0.6) +
+  geom_stratum(width = 0.4, alpha = 0.9, color = "black") +
+  geom_text(stat = "stratum",
+            aes(label = sub(".*_", "", after_stat(stratum))),
+            size = 6,
+            fontface = "bold",
+            color = "white") +
+  scale_x_discrete(limits = c("Verhaak", "Neftel", "Couturier", "Garofano", "Nomura"),
+                   expand = c(0.1, 0.1)) +
+  scale_fill_manual(values = verhaak_palette) +
+  labs(title = "Classifier Concordance Flow",
+       subtitle = "Flow of all combined pre- and post-treatment samples") +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 30, face = "bold", hjust = 0.5, margin = margin(b = 10)),
+    plot.subtitle = element_text(size = 20, hjust = 0.5, margin = margin(b = 25)),
+    axis.text.x = element_text(size = 20, face = "bold"),
+    plot.margin = margin(1, 1, 1, 1, "cm")
+  )
+
+print(sankey_plot)
+```
+
+# Extended Data Fig. 6f
+
+Correlates bulk Verhaak ssGSEA scores with corresponding single-cell signature scores.
+
+```{r}
+comparison_subset_plot <- ggscatter(
+  comparison_subset_6f,
+  x = 'ssGSEA_score',
+  y = 'single_cell_score',
+  facet.by = c('ssGSEA', 'single_cell'),
+  add = 'reg.line',
+  add.params = list(color = 'red'),
+  cor.coef = TRUE,
+  cor.coeff.args = list(method = 'spearman', cor.coef.name = 'rho', label.sep = '\n')
+)
+print(comparison_subset_plot)
+```
+
+# Extended Data Fig. 6g
+
+Generates forest plots of multivariable Cox regressions for MES subtypes in both ICB and GLASS cohorts.
+
+```{r}
+run_cox_icb_adjusted <- function(dataset, comp_row) {
+    analysis_data <- dataset %>% mutate(group = case_when(eval(comp_row$mes_group_logic[[1]]) ~ "MES_Group", eval(comp_row$control_group_logic[[1]]) ~ "Control_Group", TRUE ~ NA_character_)) %>% filter(!is.na(group)) %>% mutate(group = factor(group, levels = c("Control_Group", "MES_Group")))
+    if (nrow(analysis_data) < 2 || n_distinct(analysis_data$group) < 2) { return(NULL) }
+    model_formula <- Surv(time_years, event) ~ group + `ICB for Newly diagnosed`
+    cox_model <- try(coxph(model_formula, data = analysis_data), silent = TRUE)
+    if (inherits(cox_model, "try-error")) { return(NULL) }
+    result <- broom::tidy(cox_model, conf.int = TRUE, exponentiate = TRUE) %>%
+      filter(term == "groupMES_Group") %>%
+      select(estimate, conf.low, conf.high, p.value)
+    result$n_total <- cox_model$n
+    return(result)
+}
+run_cox_glass_adjusted <- function(dataset, comp_row) {
+  analysis_data <- dataset %>% mutate(group = case_when(eval(comp_row$mes_logic[[1]]) ~ "MES_Group", eval(comp_row$control_logic[[1]]) ~ "Control_Group", TRUE ~ NA_character_)) %>% filter(!is.na(group)) %>% mutate(group = factor(group, levels = c("Control_Group", "MES_Group")))
+  if (nrow(analysis_data) < 2 || n_distinct(analysis_data$group) < 2) { return(NULL) }
+  model_formula <- Surv(time_years, event) ~ group + primary_or_recurrent
+  cox_model <- try(coxph(model_formula, data = analysis_data), silent = TRUE)
+  if (inherits(cox_model, "try-error")) { return(NULL) }
+  result <- broom::tidy(cox_model, conf.int = TRUE, exponentiate = TRUE) %>%
+    filter(term == "groupMES_Group") %>%
+    select(estimate, conf.low, conf.high, p.value)
+  result$n_total <- cox_model$n
+  return(result)
+}
+
+icb_results <- map_dfr(1:nrow(comparisons_icb_6g), ~run_cox_icb_adjusted(icb_data_6g, comparisons_icb_6g[.x,]) %>% mutate(classifier = comparisons_icb_6g[[.x, "classifier"]], comparison = comparisons_icb_6g[[.x, "comparison_name"]]))
+glass_results <- map_dfr(1:nrow(comparisons_glass_6g), ~run_cox_glass_adjusted(glass_data_6g, comparisons_glass_6g[.x,]) %>% mutate(classifier = comparisons_glass_6g[[.x, "classifier"]], comparison = comparisons_glass_6g[[.x, "comparison_name"]]))
+
+median_hr_icb <- median(icb_results$estimate, na.rm = TRUE)
+median_hr_glass <- median(glass_results$estimate, na.rm = TRUE)
+
+all_results <- bind_rows(icb_results, glass_results)
+max_deviation <- max(max(all_results$conf.high, na.rm = TRUE), 1 / min(all_results$conf.low, na.rm = TRUE), na.rm = TRUE)
+symmetrical_upper_limit <- max_deviation * 1.2
+symmetrical_lower_limit <- 1 / symmetrical_upper_limit
+axis_breaks <- c(0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16)
+
+y_axis_order <- c(
+    "Verhaak: MES vs. non-MES", "Verhaak: MES vs. Proneural",
+    "Neftel: MES vs. non-MES", "Neftel: MES1 vs. NPC1",
+    "Couturier: MES vs. non-MES", "Couturier: MES1 vs. OPC/NEURO",
+    "Garofano: GPM vs. non-GPM", "Garofano: GPM vs. PPR",
+    "Nomura: MES vs. non-MES", "Nomura: MES vs. OPC/NPC"
+)
+
+# Plot for GLASS
+plot_data_glass <- glass_results %>%
+  mutate(
+    hr_label = sprintf("%.2f (%.2f-%.2f)", estimate, conf.low, conf.high),
+    pval_label = if_else(p.value < 0.001, "< 0.001", sprintf("%.3f", p.value)),
+    n_label = paste0("N=", n_total)
+  ) %>%
+  mutate(
+    comparison_label = paste0(classifier, ": ", comparison),
+    comparison_label = factor(comparison_label, levels = rev(y_axis_order))
+  ) %>%
+  filter(!is.na(comparison_label))
+
+forest_plot_glass <- ggplot(plot_data_glass, aes(x=estimate, y=comparison_label)) +
+  geom_vline(xintercept=1, linetype="dashed", color="grey50") +
+  geom_vline(xintercept = median_hr_glass, linetype = "dashed", color = "#1E60AE", linewidth = 0.6) +
+  annotate("text", x = median_hr_glass, y = length(y_axis_order) + 0.3,
+           label = paste0("Median HR: ", round(median_hr_glass, 2)), 
+           color = "#1E60AE", size = 3, fontface = "italic", hjust = -0.1) +
+  geom_point(aes(x=estimate), size=3, color="#1E60AE") +
+  geom_errorbarh(aes(xmin=conf.low, xmax=conf.high), height=0.2, linewidth=0.8, color="#1E60AE") +
+  scale_x_log10(breaks=axis_breaks, limits=c(symmetrical_lower_limit, symmetrical_upper_limit * 20)) +
+  scale_y_discrete(drop = FALSE) +
+  geom_text(data = plot_data_glass, aes(x = symmetrical_upper_limit * 4, y = comparison_label, label = paste0(n_label, "      ", hr_label, "      ", pval_label)), hjust = 0, size = 3.5) +
+  annotate("text", x=symmetrical_upper_limit * 4, y=length(y_axis_order) + 0.8, label="N           HR (95% CI)           P-value", hjust=0, fontface="bold.italic", color="grey20", size=4) +
+  labs(title="Multivariate Cox Regression (GLASS Cohort)", subtitle="Hazard Ratios adjusted for sample timepoint (Primary vs. Recurrent)", x="Hazard Ratio (HR)", y="") +
+  theme_minimal(base_size=12) +
+  theme(plot.title=element_text(hjust=0.5, face="bold", size=16), plot.subtitle=element_text(hjust=0.5, size=10, color="grey40"), panel.grid.major.y=element_blank(), panel.grid.minor.x=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "lines")) +
+  coord_cartesian(clip='off')
+
+# Plot for ICB
+plot_data_icb <- icb_results %>%
+  mutate(
+    hr_label = sprintf("%.2f (%.2f-%.2f)", estimate, conf.low, conf.high),
+    pval_label = if_else(p.value < 0.001, "< 0.001", sprintf("%.3f", p.value)),
+    n_label = paste0("N=", n_total)
+  ) %>%
+  mutate(
+    comparison_label = paste0(classifier, ": ", comparison),
+    comparison_label = factor(comparison_label, levels = rev(y_axis_order))
+  ) %>%
+  filter(!is.na(comparison_label))
+
+forest_plot_icb <- ggplot(plot_data_icb, aes(x=estimate, y=comparison_label)) +
+  geom_vline(xintercept=1, linetype="dashed", color="grey50") +
+  geom_vline(xintercept = median_hr_icb, linetype = "dashed", color = "#a50f15", linewidth = 0.6) +
+  annotate("text", x = median_hr_icb, y = length(y_axis_order) + 0.3,
+           label = paste0("Median HR: ", round(median_hr_icb, 2)), 
+           color = "#a50f15", size = 3, fontface = "italic", hjust = -0.1) +
+  geom_point(aes(x=estimate), size=3, color="#a50f15") +
+  geom_errorbarh(aes(xmin=conf.low, xmax=conf.high), height=0.2, linewidth=0.8, color="#a50f15") +
+  scale_x_log10(breaks=axis_breaks, limits=c(symmetrical_lower_limit, symmetrical_upper_limit * 20)) +
+  scale_y_discrete(drop = FALSE) +
+  geom_text(data = plot_data_icb, aes(x = symmetrical_upper_limit * 4, y = comparison_label, label = paste0(n_label, "      ", hr_label, "      ", pval_label)), hjust = 0, size = 3.5) +
+  annotate("text", x=symmetrical_upper_limit * 4, y=length(y_axis_order) + 0.8, label="N           HR (95% CI)           P-value", hjust=0, fontface="bold.italic", color="grey20", size=4) +
+  labs(title="Multivariate Cox Regression (ICB Cohort)", subtitle="Hazard Ratios adjusted for treatment context (Newly-diagnosed vs. Recurrent)", x="Hazard Ratio (HR)", y="") +
+  theme_minimal(base_size=12) +
+  theme(plot.title=element_text(hjust=0.5, face="bold", size=16), plot.subtitle=element_text(hjust=0.5, size=10, color="grey40"), panel.grid.major.y=element_blank(), panel.grid.minor.x=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "lines")) +
+  coord_cartesian(clip='off')
+
+print(forest_plot_icb)
+print(forest_plot_glass)
+```
