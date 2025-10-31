@@ -1,6 +1,6 @@
 # gbm\_icb\_manuscript
 
-Code for generating figures in the Glioblastoma ICB manuscript of Ghannam et al.:
+Code for generating figures in the glioblastoma ICB manuscript of Ghannam et al.:
 
 > "Tumor Transcriptional Subtype is a Major Axis of Immune Checkpoint Blockade Response in Glioblastoma". _Ghannam et al.(2025)_ 
 
