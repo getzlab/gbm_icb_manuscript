@@ -1,0 +1,1202 @@
+---
+title: "longitudinal_bulk_RNA_seq_analyses"
+output: html_document
+---
+
+Run this notebook to generate
+
+-   Figure 2l, 2m
+
+-   Extended Data Figure 9a, 9b, 9c, 9d, 9e, 9f, 9g, 9h
+
+-   Extended Data Figure 10c
+
+This script analyzes transcriptional subtype transitions (pre- vs. post-therapy) and their association with survival in the ICB and GLASS cohorts.
+
+-   ICB Cohort: LTS vs STS transition barplots.
+
+-   GLASS Cohort: LTS vs STS transition barplots.
+
+-   ICB & GLASS Cohorts: Stable subtype (MES vs. non-MES) survival.
+
+-   ICB & GLASS Cohorts: MES/PN ratio change vs. survival.
+
+# Load data
+
+```{r}
+library(tidyverse)
+library(survival)
+library(survminer)
+library(RColorBrewer)
+library(ggalluvial)
+library(mclust)
+library(broom)
+library(patchwork)
+library(readxl)
+library(stats)
+library(exact2x2)
+
+zenodo_dir_path <- '/Users/jackghannam/Partners HealthCare Dropbox/Jack Ghannam/GBM IBM figures/Submission/Nature Cancer/Revisions/Code_depo/Uploaded/bulk_transcriptional_classifiers_survival/bulk_transcriptional_classifiers'
+
+icb_data_raw <- read_tsv(file.path(zenodo_dir_path, "icb_cohort_unified.tsv"), show_col_types = FALSE)
+glass_data_raw <- read_tsv(file.path(zenodo_dir_path, "glass_cohort_clinical_subtypes.tsv"), show_col_types = FALSE)
+sc_scores <- read_tsv(file.path(zenodo_dir_path, "sc_classifier_scores.tsv"), show_col_types = FALSE)
+verhaak_scores <- read_excel(file.path(zenodo_dir_path, "bulk_verhaak_ssgsea_scores.xlsx"), skip = 1)
+```
+
+# Data pre-processing
+
+Prepares all data objects required for the subsequent plotting chunks.
+
+```{r}
+#Survival threshold for LTS vs STS and themes
+cutoff_days_18mo <- 547.5
+bar_plot_text_size <- 7
+two_group_palette <- c("#4E84C4", "#BF1E2E")
+clean_theme <- theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour = "black")
+  )
+colors_alluvial <- c("MES to non-MES" = "#FC9A99",
+                     "MES to MES" = "#BF1E2E",
+                     "non-MES to MES" = "#A5CEE3",
+                     "non-MES to non-MES" = "#4E84C4")
+
+#Object 1: ICB Transition Data (Fig 2l/m, ExtDataFig 9a, 9d)
+transition_data_verhaak_icb <- icb_data_raw %>%
+  filter(!is.na(verhaak_subtype_pre) & !is.na(verhaak_subtype_post)) %>%
+  mutate(
+    osicb = as.numeric(osicb),
+    osicb_years = osicb / 365.25,
+    status_logical = ifelse(Deceased == "Deceased", TRUE, FALSE),
+    Pre = ifelse(verhaak_subtype_pre == "MESENCHYMAL", "MES", "non-MES"),
+    Post = ifelse(verhaak_subtype_post == "MESENCHYMAL", "MES", "non-MES"),
+    transition_group = case_when(
+      Pre == "MES" & Post == "MES" ~ "MES to MES",
+      Pre == "MES" & Post == "non-MES" ~ "MES to non-MES",
+      Pre == "non-MES" & Post == "MES" ~ "non-MES to MES",
+      Pre == "non-MES" & Post == "non-MES" ~ "non-MES to non-MES",
+      TRUE ~ NA_character_
+    ),
+    survival_group = ifelse(osicb >= cutoff_days_18mo, "LTS", "STS")
+  ) %>%
+  filter(!is.na(osicb) & !is.na(status_logical))
+
+#Object 2: ICB Paired Alluvial Data (ExtDataFig 9b)
+verhaak_paired_data_9b <- icb_data_raw %>%
+  select(participant_id, contains("Verhaak_")) %>%
+  na.omit()
+
+verhaak_pre_long_9b <- verhaak_paired_data_9b %>%
+  select(participant_id, VERHAAK_GLIOBLASTOMA_CLASSICAL_pre, VERHAAK_GLIOBLASTOMA_MESENCHYMAL_pre, VERHAAK_GLIOBLASTOMA_NEURAL_pre, VERHAAK_GLIOBLASTOMA_PRONEURAL_pre) %>%
+  pivot_longer(cols = -participant_id, names_to = "score_subtype_full", values_to = "score") %>%
+  mutate(score_subtype = str_remove_all(score_subtype_full, "VERHAAK_GLIOBLASTOMA_|_pre"), timepoint = "PreTx")
+
+verhaak_post_long_9b <- verhaak_paired_data_9b %>%
+  select(participant_id, VERHAAK_GLIOBLASTOMA_CLASSICAL_post, VERHAAK_GLIOBLASTOMA_MESENCHYMAL_post, VERHAAK_GLIOBLASTOMA_NEURAL_post, VERHAAK_GLIOBLASTOMA_PRONEURAL_post) %>%
+  pivot_longer(cols = -participant_id, names_to = "score_subtype_full", values_to = "score") %>%
+  mutate(score_subtype = str_remove_all(score_subtype_full, "VERHAAK_GLIOBLASTOMA_|_post"), timepoint = "PostTx")
+
+verhaak_long_raw_9b <- bind_rows(verhaak_pre_long_9b, verhaak_post_long_9b)
+
+min_v_score_9b <- min(verhaak_long_raw_9b$score, na.rm = TRUE)
+if(is.finite(min_v_score_9b) && min_v_score_9b < 0) {
+  verhaak_long_adjusted_9b <- verhaak_long_raw_9b %>%
+    mutate(score = score + abs(min_v_score_9b))
+} else {
+  verhaak_long_adjusted_9b <- verhaak_long_raw_9b
+}
+
+verhaak_plotdata_9b <- verhaak_long_adjusted_9b %>%
+  group_by(participant_id, timepoint) %>%
+  mutate(score_percentage = score / sum(score, na.rm=TRUE) * 100) %>%
+  ungroup()
+
+#Object 3: GLASS Transition Data (Fig 2l/m, ExtDataFig 9a, 9c, 9d)
+glass_patient_data <- glass_data_raw %>%
+  filter(primary_or_recurrent == "primary") %>%
+  select(
+    participant_id = case_barcode,
+    os_days = case_overall_survival_days,
+    status = case_vital_status
+  ) %>%
+  distinct()
+
+glass_subtype_data_wide <- glass_data_raw %>%
+  select(
+    participant_id = case_barcode,
+    primary_or_recurrent,
+    Neftel = Neftel_dominant,
+    Garofano = Garofano_dominant,
+    Nomura = Nomura_dominant,
+    Couturier = Couturier_dominant,
+    Verhaak = verhaak_subtype
+  ) %>%
+  filter(primary_or_recurrent %in% c("primary", "recurrent")) %>%
+  pivot_wider(
+    names_from = primary_or_recurrent,
+    values_from = c(Neftel, Garofano, Nomura, Couturier, Verhaak),
+    names_glue = "{.value}_{primary_or_recurrent}"
+  ) %>%
+  rename(
+    Neftel_pre = Neftel_primary, Neftel_post = Neftel_recurrent,
+    Garofano_pre = Garofano_primary, Garofano_post = Garofano_recurrent,
+    Nomura_pre = Nomura_primary, Nomura_post = Nomura_recurrent,
+    Couturier_pre = Couturier_primary, Couturier_post = Couturier_recurrent,
+    Verhaak_pre = Verhaak_primary, Verhaak_post = Verhaak_recurrent
+  )
+
+transition_data_glass <- glass_patient_data %>%
+  left_join(glass_subtype_data_wide, by = "participant_id") %>%
+  drop_na(
+    Neftel_pre, Neftel_post,
+    Garofano_pre, Garofano_post,
+    Nomura_pre, Nomura_post,
+    Couturier_pre, Couturier_post,
+    Verhaak_pre, Verhaak_post
+  ) %>%
+  mutate(
+    status_logical = ifelse(status == "dead", TRUE, FALSE),
+    os_years = os_days / 365.25,
+    survival_group = ifelse(os_days >= cutoff_days_18mo, "LTS", "STS")
+  ) %>%
+  filter(!is.na(os_days) & !is.na(status_logical))
+
+#Object 4: ICB Survival Data (ExtDataFig 9e/f)
+verhaak_plotdata_icb_long <- icb_data_raw %>%
+  select(participant_id, starts_with("VERHAAK_GLIOBLASTOMA_")) %>%
+  pivot_longer(
+    cols = -participant_id,
+    names_to = "score_subtype_full",
+    values_to = "score"
+  ) %>%
+  mutate(
+    timepoint = if_else(str_detect(score_subtype_full, "_post$"), "PostTx", "PreTx"),
+    score_subtype = str_remove_all(score_subtype_full, "VERHAAK_GLIOBLASTOMA_|_pre|_post")
+  ) %>%
+  filter(!is.na(score))
+
+min_v_score <- min(verhaak_plotdata_icb_long$score, na.rm = TRUE)
+if (is.finite(min_v_score) && min_v_score < 0) {
+  verhaak_plotdata_icb_long <- verhaak_plotdata_icb_long %>%
+    mutate(score = score + abs(min_v_score))
+}
+
+verhaak_plotdata_icb <- verhaak_plotdata_icb_long %>%
+  group_by(participant_id, timepoint) %>%
+  mutate(score_percentage = score / sum(score, na.rm = TRUE) * 100) %>%
+  ungroup()
+
+pseudocount_9e <- 0.01
+ratio_data_icb_9e <- verhaak_plotdata_icb %>%
+  filter(score_subtype %in% c("MESENCHYMAL", "PRONEURAL")) %>%
+  pivot_wider(id_cols = c(participant_id, timepoint), 
+              names_from = score_subtype, 
+              values_from = score_percentage) %>% 
+  mutate(mes_pn_ratio = (MESENCHYMAL + pseudocount_9e) / (PRONEURAL + pseudocount_9e))
+
+ratio_change_icb_9e <- ratio_data_icb_9e %>%
+  select(participant_id, timepoint, mes_pn_ratio) %>%
+  pivot_wider(names_from = timepoint, values_from = mes_pn_ratio) %>%
+  na.omit() %>%
+  rename(PreTx = PreTx, PostTx = PostTx)
+
+patient_info_icb_9e <- icb_data_raw %>%
+  select(participant_id, osicb, collection_date_icb_pre, verhaak_subtype_pre) %>%
+  mutate(
+    days_pre_icb = abs(as.numeric(collection_date_icb_pre)),
+    survival_group = factor(ifelse(osicb >= cutoff_days_18mo, "LTS", "STS"), levels = c("STS", "LTS"))
+    ) %>%
+  select(participant_id, osicb, survival_group, days_pre_icb, verhaak_subtype_pre) %>%
+  na.omit()
+
+mes_pretx_pids_icb_9e <- icb_data_raw %>%
+  filter(verhaak_subtype_pre == "MESENCHYMAL") %>%
+  pull(participant_id)
+timed_pids_icb_9e <- patient_info_icb_9e %>%
+  filter(days_pre_icb <= 45) %>%
+  pull(participant_id)
+final_cohort_pids_icb_9e <- intersect(mes_pretx_pids_icb_9e, timed_pids_icb_9e)
+
+analysis_data_icb_9e <- ratio_change_icb_9e %>%
+  filter(participant_id %in% final_cohort_pids_icb_9e) %>%
+  inner_join(patient_info_icb_9e, by = "participant_id") %>%
+  mutate(fold_change = PostTx / PreTx)
+  
+correlation_data_icb_9e <- analysis_data_icb_9e %>%
+  mutate(log2_fold_change = log2(fold_change))
+
+#Object 5: GLASS Survival Data (ExtDataFig 9g/h)
+verhaak_long_raw_glass_9g <- glass_data_raw %>%
+  filter(primary_or_recurrent %in% c("primary", "recurrent")) %>%
+  select(case_barcode, primary_or_recurrent, starts_with("VERHAAK_GLIOBLASTOMA_")) %>% 
+  pivot_longer(cols = -c(case_barcode, primary_or_recurrent),
+               names_to = "score_subtype_full",
+               values_to = "score") %>%
+  mutate(score_subtype = str_remove(score_subtype_full, "VERHAAK_GLIOBLASTOMA_"))
+
+min_score_glass_9g <- min(verhaak_long_raw_glass_9g$score, na.rm = TRUE)
+verhaak_long_adjusted_glass_9g <- if(is.finite(min_score_glass_9g) && min_score_glass_9g < 0) { 
+  verhaak_long_raw_glass_9g %>% mutate(score = score + abs(min_score_glass_9g)) 
+} else { 
+  verhaak_long_raw_glass_9g 
+}
+
+verhaak_plotdata_glass_9g <- verhaak_long_adjusted_glass_9g %>%
+  group_by(case_barcode, primary_or_recurrent) %>%
+  mutate(score_percentage = score / sum(score, na.rm=TRUE) * 100) %>%
+  ungroup()
+
+pre_tx_dominant_subtype_glass_9g <- verhaak_plotdata_glass_9g %>%
+  filter(primary_or_recurrent == "primary") %>%
+  group_by(case_barcode) %>%
+  slice_max(order_by = score_percentage, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+mes_pretx_pids_glass_9g <- pre_tx_dominant_subtype_glass_9g %>%
+  filter(score_subtype == "MESENCHYMAL") %>%
+  pull(case_barcode)
+
+ratio_data_glass_9g <- verhaak_plotdata_glass_9g %>%
+  filter(case_barcode %in% mes_pretx_pids_glass_9g) %>%
+  filter(score_subtype %in% c("MESENCHYMAL", "PRONEURAL")) %>%
+  pivot_wider(id_cols = c(case_barcode, primary_or_recurrent),
+              names_from = score_subtype,
+              values_from = score_percentage) %>%
+  mutate(mes_pn_ratio = (MESENCHYMAL + pseudocount_9e) / (PRONEURAL + pseudocount_9e))
+
+ratio_change_glass_9g <- ratio_data_glass_9g %>%
+  select(case_barcode, primary_or_recurrent, mes_pn_ratio) %>%
+  pivot_wider(names_from = primary_or_recurrent, values_from = mes_pn_ratio) %>%
+  na.omit()
+
+survival_info_glass_9g <- glass_data_raw %>%
+  filter(primary_or_recurrent == "primary") %>%
+  select(case_barcode, os_days = case_overall_survival_days) %>%
+  distinct()
+
+analysis_data_glass_9g <- ratio_change_glass_9g %>%
+  inner_join(survival_info_glass_9g, by = "case_barcode") %>%
+  mutate(survival_group = factor(ifelse(os_days >= cutoff_days_18mo, "LTS", "STS"),
+                                 levels = c("STS", "LTS")),
+         fold_change = recurrent / primary)
+
+correlation_data_glass_9g <- analysis_data_glass_9g %>%
+  mutate(log2_fold_change = log2(fold_change))
+
+#Object 6: Neftel MES1 vs MES2 Survival (ExtDataFig 10c)
+df_10c <- icb_data_raw %>%
+  filter(Neftel_dominant_pre %in% c("MES1", "MES2")) %>%
+  mutate(
+    osicb_years = as.numeric(osicb) / 365.25,
+    event_status = ifelse(Deceased == "Deceased", 1, 0),
+    subtype_factor = factor(Neftel_dominant_pre, levels = c("MES1", "MES2"))
+  ) %>%
+  filter(!is.na(osicb_years), !is.na(event_status))
+```
+
+# Figure 2l & 2m
+
+Creates transition barplots (LTS vs STS) and stable subtype survival curves for ICB and GLASS cohorts.
+
+```{r}
+paired_n_icb <- transition_data_verhaak_icb %>%
+  mutate(surv_bin = factor(survival_group, levels = c("STS", "LTS"))) %>%
+  group_by(surv_bin, transition_group) %>%
+  summarize(count = n(), .groups = 'drop')
+
+bar_plot_icb <- ggplot(paired_n_icb, aes(x = surv_bin, y = count, fill = transition_group)) +
+  geom_bar(stat = "identity", position = "fill") +
+  geom_text(aes(label = count), position = position_fill(vjust = 0.5), 
+            color = "white", size = bar_plot_text_size) +
+  labs(title = "ICB Cohort: STS vs LTS transitions", x = "Survival group", y = "Proportion", fill = "Subtype transition") +
+  scale_fill_manual(
+    values = c(
+      "MES to MES" = "#BE202E",
+      "MES to non-MES" = "#F59898",
+      "non-MES to MES" = "#A4CCE1",
+      "non-MES to non-MES" = "#4D83C3"
+    )
+  ) +
+  clean_theme
+
+print(bar_plot_icb)
+
+df_stable_icb <- transition_data_verhaak_icb %>%
+  filter(transition_group %in% c("MES to MES", "non-MES to non-MES")) %>%
+  mutate(mes_transition = factor(transition_group, levels = c("non-MES to non-MES", "MES to MES")))
+
+if(nrow(df_stable_icb) > 0) {
+  max_survival_years_icb <- ceiling(max(df_stable_icb$osicb_years, na.rm = TRUE))
+  fit_trans_stable_icb <- survfit(Surv(osicb_years, status_logical) ~ mes_transition, data = df_stable_icb)
+  p_trans_stable_icb <- ggsurvplot(
+    fit_trans_stable_icb, data = df_stable_icb, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+    title = "ICB Cohort: Stable Subtype Survival",
+    xlab = "Years", ylab = "Overall survival probability",
+    palette = two_group_palette,
+    ggtheme = clean_theme,
+    break.time.by = 1,
+    xlim = c(0, max_survival_years_icb)
+  )
+  print(p_trans_stable_icb)
+}
+
+paired_glass_verhaak <- transition_data_glass %>%
+  filter(!is.na(Verhaak_pre) & !is.na(Verhaak_post)) %>%
+  mutate(mes_transition = case_when(
+    Verhaak_pre == "MESENCHYMAL" & Verhaak_post == "MESENCHYMAL" ~ "MES to MES",
+    Verhaak_pre == "MESENCHYMAL" & Verhaak_post != "MESENCHYMAL" ~ "MES to non-MES",
+    Verhaak_pre != "MESENCHYMAL" & Verhaak_post == "MESENCHYMAL" ~ "non-MES to MES",
+    Verhaak_pre != "MESENCHYMAL" & Verhaak_post != "MESENCHYMAL" ~ "non-MES to non-MES",
+    TRUE ~ NA_character_
+  ))
+
+paired_n_glass <- paired_glass_verhaak %>% 
+  mutate(surv_bin = factor(survival_group, levels = c("STS", "LTS"))) %>% 
+  group_by(surv_bin, mes_transition) %>% 
+  summarize(count = n(), .groups = 'drop')
+
+bar_plot_glass <- ggplot(paired_n_glass, aes(x = surv_bin, y = count, fill = mes_transition)) +
+  geom_bar(stat = "identity", position = "fill") +
+  geom_text(aes(label = count), position = position_fill(vjust = 0.5), color = "white", size = bar_plot_text_size) +
+  labs(title = "GLASS Cohort: STS vs LTS Transitions (Verhaak)", x = "Survival group", fill = "Subtype transition") +
+  scale_fill_manual(values = c("MES to MES" = "#d62728", "MES to non-MES" = "#ff9896", 
+                               "non-MES to MES" = "#1f77b4", "non-MES to non-MES" = "#aec7e8")) +
+  clean_theme
+
+print(bar_plot_glass)
+
+df_stable_glass <- paired_glass_verhaak %>% 
+  filter(mes_transition %in% c("MES to MES", "non-MES to non-MES")) %>% 
+  mutate(mes_transition = factor(mes_transition, levels = c("non-MES to non-MES", "MES to MES")))
+
+if(nrow(df_stable_glass) > 0) {
+  fit_trans_stable_glass <- survfit(Surv(os_years, status_logical) ~ mes_transition, data = df_stable_glass)
+  p_trans_stable_glass <- ggsurvplot(
+    fit_trans_stable_glass, data = df_stable_glass, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+    title = "GLASS Cohort: Stable Subtype Survival (Verhaak)", xlab = "Years", ylab = "Overall survival probability",
+    palette = two_group_palette, ggtheme = clean_theme, break.time.by = 1
+  )
+  print(p_trans_stable_glass)
+}
+```
+
+# Extended Data Fig. 9a
+
+Alluvial plots of MES/non-MES transitions for LTS/STS groups in ICB and GLASS cohorts.
+
+```{r}
+transition_data_LTS_icb <- transition_data_verhaak_icb %>%
+  filter(survival_group == "LTS") %>%
+  group_by(Pre, Post, transition_group) %>%
+  summarise(count = n(), .groups = 'drop')
+
+alluvial_ICB_LTS <- ggplot(transition_data_LTS_icb,
+                            aes(axis1 = Pre, axis2 = Post, y = count, fill = transition_group)) +
+  geom_alluvium() +
+  geom_stratum() +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+  scale_x_discrete(limits = c("Pre", "Post"), expand = c(.2, .2)) +
+  scale_fill_manual(values = colors_alluvial) +
+  labs(title = "ICB Cohort - Alluvial Plot for LTS Patients",
+       x = "Transition", y = "Count", fill = "Transition Type") +
+  theme_minimal() +
+  geom_flow(stat = "alluvium", lode.guidance = "frontback", color = "black")
+print(alluvial_ICB_LTS)
+
+transition_data_STS_icb <- transition_data_verhaak_icb %>%
+  filter(survival_group == "STS") %>%
+  group_by(Pre, Post, transition_group) %>%
+  summarise(count = n(), .groups = 'drop')
+
+alluvial_ICB_STS <- ggplot(transition_data_STS_icb,
+                            aes(axis1 = Pre, axis2 = Post, y = count, fill = transition_group)) +
+  geom_alluvium() +
+  geom_stratum() +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+  scale_x_discrete(limits = c("Pre", "Post"), expand = c(.2, .2)) +
+  scale_fill_manual(values = colors_alluvial) +
+  labs(title = "ICB Cohort - Alluvial Plot for STS Patients",
+       x = "Transition", y = "Count", fill = "Transition Type") +
+  theme_minimal() +
+  geom_flow(stat = "alluvium", lode.guidance = "frontback", color = "black")
+print(alluvial_ICB_STS)
+
+transition_data_glass_LTS <- transition_data_glass %>%
+  filter(!is.na(Verhaak_pre) & !is.na(Verhaak_post)) %>%
+  mutate(
+    Pre = ifelse(Verhaak_pre == "MESENCHYMAL", "MES", "non-MES"),
+    Post = ifelse(Verhaak_post == "MESENCHYMAL", "MES", "non-MES"),
+    transition_group = case_when(
+      Pre == "MES" & Post == "MES" ~ "MES to MES",
+      Pre == "MES" & Post == "non-MES" ~ "MES to non-MES",
+      Pre == "non-MES" & Post == "MES" ~ "non-MES to MES",
+      TRUE ~ "non-MES to non-MES"
+    )
+  ) %>%
+  filter(survival_group == "LTS") %>%
+  group_by(Pre, Post, transition_group) %>%
+  summarise(count = n(), .groups = 'drop')
+
+alluvial_GLASS_LTS <- ggplot(transition_data_glass_LTS,
+                               aes(axis1 = Pre, axis2 = Post, y = count, fill = transition_group)) +
+  geom_alluvium() +
+  geom_stratum() +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+  scale_x_discrete(limits = c("Primary", "Recurrent"), expand = c(.2, .2)) +
+  scale_fill_manual(values = colors_alluvial) +
+  labs(title = "GLASS Cohort - Alluvial Plot for LTS Patients",
+       x = "Timepoint", y = "Count", fill = "Transition Type") +
+  theme_minimal() +
+  geom_flow(stat = "alluvium", lode.guidance = "frontback", color = "black")
+print(alluvial_GLASS_LTS)
+
+transition_data_glass_STS <- transition_data_glass %>%
+  filter(!is.na(Verhaak_pre) & !is.na(Verhaak_post)) %>%
+  mutate(
+    Pre = ifelse(Verhaak_pre == "MESENCHYMAL", "MES", "non-MES"),
+    Post = ifelse(Verhaak_post == "MESENCHYMAL", "MES", "non-MES"),
+    transition_group = case_when(
+      Pre == "MES" & Post == "MES" ~ "MES to MES",
+      Pre == "MES" & Post == "non-MES" ~ "MES to non-MES",
+      Pre == "non-MES" & Post == "MES" ~ "non-MES to MES",
+      TRUE ~ "non-MES to non-MES"
+    )
+  ) %>%
+  filter(survival_group == "STS") %>%
+  group_by(Pre, Post, transition_group) %>%
+  summarise(count = n(), .groups = 'drop')
+
+alluvial_GLASS_STS <- ggplot(transition_data_glass_STS,
+                               aes(axis1 = Pre, axis2 = Post, y = count, fill = transition_group)) +
+  geom_alluvium() +
+  geom_stratum() +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+  scale_x_discrete(limits = c("Primary", "Recurrent"), expand = c(.2, .2)) +
+  scale_fill_manual(values = colors_alluvial) +
+  labs(title = "GLASS Cohort - Alluvial Plot for STS Patients",
+       x = "Timepoint", y = "Count", fill = "Transition Type") +
+  theme_minimal() +
+  geom_flow(stat = "alluvium", lode.guidance = "frontback", color = "black")
+print(alluvial_GLASS_STS)
+```
+
+# Extended Data Fig. 9b
+
+Alluvial plot showing Verhaak subtype proportional changes for each patient.
+
+```{r}
+verhaak_colors_9b <- c(
+    "MESENCHYMAL" = "#d62728",
+    "CLASSICAL" = "#F69351",
+    "NEURAL" = "#94A3AF",
+    "PRONEURAL" = "#1f77b4")
+
+verhaak_plotdata_9b$score_subtype <- factor(verhaak_plotdata_9b$score_subtype, levels=c("MESENCHYMAL", "CLASSICAL", "NEURAL", "PRONEURAL"))
+verhaak_plotdata_9b$timepoint <- factor(verhaak_plotdata_9b$timepoint, levels = c("PreTx", "PostTx"))
+
+dominant_subtypes_9b <- verhaak_plotdata_9b %>%
+  group_by(participant_id, timepoint) %>%
+  slice_max(order_by = score_percentage, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+transition_summary_9b <- dominant_subtypes_9b %>%
+  select(participant_id, timepoint, score_subtype) %>%
+  pivot_wider(names_from = timepoint, values_from = score_subtype) %>%
+  rename(pre_subtype = PreTx, post_subtype = PostTx)
+
+transition_summary_9b <- transition_summary_9b %>%
+  mutate(
+    transition_category = case_when(
+      pre_subtype == "MESENCHYMAL" & post_subtype != "MESENCHYMAL" ~ 1,
+      pre_subtype == "MESENCHYMAL" & post_subtype == "MESENCHYMAL" ~ 2,
+      pre_subtype != "MESENCHYMAL" & post_subtype != "MESENCHYMAL" ~ 3,
+      pre_subtype != "MESENCHYMAL" & post_subtype == "MESENCHYMAL" ~ 4,
+      TRUE ~ 5
+    )
+  ) %>%
+  arrange(transition_category, participant_id)
+
+ordered_participants_9b <- transition_summary_9b$participant_id
+
+verhaak_plotdata_9b$participant_id <- factor(verhaak_plotdata_9b$participant_id, levels = ordered_participants_9b)
+
+p_verhaak_9b <- ggplot(data = verhaak_plotdata_9b,
+       aes(x = timepoint, stratum = score_subtype, alluvium = score_subtype,
+           y = score_percentage, fill = score_subtype)) +
+  geom_flow(alpha = 0.7) +
+  geom_stratum(alpha = 0.9, color = "black") +
+  facet_wrap(~ participant_id) +
+  scale_fill_manual(values = verhaak_colors_9b) +
+  scale_x_discrete(labels = c("PreTx" = "pre-ICB", "PostTx" = "post-ICB")) +
+  labs(
+    x = "", y = "Proportion of Subtype Score",
+    title = "Verhaak Subtype Proportional Changes by Patient",
+    fill = "Subtype"
+  ) +
+  theme_classic() +
+  theme(strip.text = element_text(face="bold"), axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+print(p_verhaak_9b)
+```
+
+# Extended Data Fig. 9c
+
+Transition barplots and stable subtype survival curves for multiple classifiers in ICB and GLASS cohorts.
+
+```{r}
+clean_theme_9c <- theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour = "black")
+  )
+two_group_palette_9c <- c("#4E84C4", "#BF1E2E")
+bar_plot_text_size_9c <- 7
+
+create_transition_barplot <- function(data, transition_col, title) {
+  
+  mes_label <- "MES to MES"
+  mes_non_label <- "MES to non-MES"
+  non_mes_label <- "non-MES to MES"
+  non_non_label <- "non-MES to non-MES"
+  
+  if (transition_col == "garofano_transition") {
+    mes_label <- "GPM to GPM"
+    mes_non_label <- "GPM to non-GPM"
+    non_mes_label <- "non-GPM to GPM"
+    non_non_label <- "non-GPM to non-GPM"
+  }
+  
+  paired_n <- data %>%
+    filter(!is.na(!!sym(transition_col))) %>%
+    group_by(survival_group, !!sym(transition_col)) %>%
+    summarize(count = n(), .groups = 'drop') %>%
+    mutate(surv_bin = factor(survival_group, levels = c("STS", "LTS")))
+
+  bar_plot <- ggplot(paired_n, aes(x = surv_bin, y = count, fill = !!sym(transition_col))) +
+    geom_bar(stat = "identity", position = "fill") +
+    geom_text(aes(label = count), position = position_fill(vjust = 0.5), 
+              color = "white", size = bar_plot_text_size_9c) +
+    labs(title = title, x = "Survival group", y = "Proportion", fill = "Subtype transition") +
+    scale_fill_manual(
+      values = c(
+        setNames("#BE202E", mes_label),
+        setNames("#F59898", mes_non_label),
+        setNames("#A4CCE1", non_mes_label),
+        setNames("#4D83C3", non_non_label)
+      )
+    ) +
+    clean_theme_9c
+  
+  return(bar_plot)
+}
+
+transition_data_icb_all <- icb_data_raw %>%
+  filter(
+    !is.na(verhaak_subtype_pre) & !is.na(verhaak_subtype_post) &
+    !is.na(Neftel_dominant_pre) & !is.na(Neftel_dominant_post) &
+    !is.na(Garofano_dominant_pre) & !is.na(Garofano_dominant_post) &
+    !is.na(Nomura_dominant_pre) & !is.na(Nomura_dominant_post) &
+    !is.na(Couturier_dominant_pre) & !is.na(Couturier_dominant_post)
+  ) %>%
+  mutate(
+    osicb = as.numeric(osicb),
+    osicb_years = osicb / 365.25,
+    status_logical = ifelse(Deceased == "Deceased", TRUE, FALSE),
+    survival_group = ifelse(osicb >= cutoff_days_18mo, "LTS", "STS"),
+    
+    verhaak_transition = case_when(
+      verhaak_subtype_pre == "MESENCHYMAL" & verhaak_subtype_post == "MESENCHYMAL" ~ "MES to MES",
+      verhaak_subtype_pre == "MESENCHYMAL" & verhaak_subtype_post != "MESENCHYMAL" ~ "MES to non-MES",
+      verhaak_subtype_pre != "MESENCHYMAL" & verhaak_subtype_post == "MESENCHYMAL" ~ "non-MES to MES",
+      verhaak_subtype_pre != "MESENCHYMAL" & verhaak_subtype_post != "MESENCHYMAL" ~ "non-MES to non-MES",
+      TRUE ~ NA_character_
+    ),
+    neftel_transition = case_when(
+      (grepl("MES", Neftel_dominant_pre)) & (grepl("MES", Neftel_dominant_post)) ~ "MES to MES",
+      (grepl("MES", Neftel_dominant_pre)) & (!grepl("MES", Neftel_dominant_post)) ~ "MES to non-MES",
+      (!grepl("MES", Neftel_dominant_pre)) & (grepl("MES", Neftel_dominant_post)) ~ "non-MES to MES",
+      (!grepl("MES", Neftel_dominant_pre)) & (!grepl("MES", Neftel_dominant_post)) ~ "non-MES to non-MES",
+      TRUE ~ NA_character_
+    ),
+    garofano_transition = case_when(
+      Garofano_dominant_pre == "GPM" & Garofano_dominant_post == "GPM" ~ "GPM to GPM",
+      Garofano_dominant_pre == "GPM" & Garofano_dominant_post != "GPM" ~ "GPM to non-GPM",
+      Garofano_dominant_pre != "GPM" & Garofano_dominant_post == "GPM" ~ "non-GPM to GPM",
+      Garofano_dominant_pre != "GPM" & Garofano_dominant_post != "GPM" ~ "non-GPM to non-GPM",
+      TRUE ~ NA_character_
+    ),
+    nomura_transition = case_when(
+      Nomura_dominant_pre == "MES" & Nomura_dominant_post == "MES" ~ "MES to MES",
+      Nomura_dominant_pre == "MES" & Nomura_dominant_post != "MES" ~ "MES to non-MES",
+      Nomura_dominant_pre != "MES" & Nomura_dominant_post == "MES" ~ "non-MES to MES",
+      Nomura_dominant_pre != "MES" & Nomura_dominant_post != "MES" ~ "non-MES to non-MES",
+      TRUE ~ NA_character_
+    ),
+    couturier_transition = case_when(
+      Couturier_dominant_pre %in% c("MES1", "MES2") & Couturier_dominant_post %in% c("MES1", "MES2") ~ "MES to MES",
+      Couturier_dominant_pre %in% c("MES1", "MES2") & !Couturier_dominant_post %in% c("MES1", "MES2") ~ "MES to non-MES",
+      !Couturier_dominant_pre %in% c("MES1", "MES2") & Couturier_dominant_post %in% c("MES1", "MES2") ~ "non-MES to MES",
+      !Couturier_dominant_pre %in% c("MES1", "MES2") & !Couturier_dominant_post %in% c("MES1", "MES2") ~ "non-MES to non-MES",
+      TRUE ~ NA_character_
+    )
+  )
+
+print(create_transition_barplot(transition_data_icb_all, "neftel_transition", "ICB: STS vs LTS Transitions (Neftel)"))
+df_stable_neftel_icb <- transition_data_icb_all %>%
+  filter(neftel_transition %in% c("MES to MES", "non-MES to non-MES")) %>%
+  mutate(mes_transition = factor(neftel_transition, levels = c("non-MES to non-MES", "MES to MES")))
+if(nrow(df_stable_neftel_icb) > 0) {
+  fit_neftel_icb <- survfit(Surv(osicb_years, status_logical) ~ mes_transition, data = df_stable_neftel_icb)
+  p_neftel_icb <- ggsurvplot(fit_neftel_icb, data = df_stable_neftel_icb, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+                            title = "Stable Subtype Survival (ICB Neftel)", xlab = "Years",
+                            ylab = "Overall survival probability", palette = two_group_palette_9c,
+                            ggtheme = clean_theme_9c, break.time.by = 1)
+  print(p_neftel_icb)
+}
+
+print(create_transition_barplot(transition_data_icb_all, "garofano_transition", "ICB: STS vs LTS Transitions (Garofano)"))
+df_stable_garofano_icb <- transition_data_icb_all %>%
+  filter(garofano_transition %in% c("GPM to GPM", "non-GPM to non-GPM")) %>%
+  mutate(gpm_transition = factor(garofano_transition, levels = c("non-GPM to non-GPM", "GPM to GPM")))
+if(nrow(df_stable_garofano_icb) > 0) {
+  fit_garofano_icb <- survfit(Surv(osicb_years, status_logical) ~ gpm_transition, data = df_stable_garofano_icb)
+  p_garofano_icb <- ggsurvplot(fit_garofano_icb, data = df_stable_garofano_icb, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+                              title = "Stable Subtype Survival (ICB Garofano)", xlab = "Years",
+                              ylab = "Overall survival probability", palette = two_group_palette_9c,
+                              ggtheme = clean_theme_9c, break.time.by = 1)
+  print(p_garofano_icb)
+}
+
+print(create_transition_barplot(transition_data_icb_all, "nomura_transition", "ICB: STS vs LTS Transitions (Nomura)"))
+df_stable_nomura_icb <- transition_data_icb_all %>%
+  filter(nomura_transition %in% c("MES to MES", "non-MES to non-MES")) %>%
+  mutate(mes_transition = factor(nomura_transition, levels = c("non-MES to non-MES", "MES to MES")))
+if(nrow(df_stable_nomura_icb) > 0) {
+  fit_nomura_icb <- survfit(Surv(osicb_years, status_logical) ~ mes_transition, data = df_stable_nomura_icb)
+  p_nomura_icb <- ggsurvplot(fit_nomura_icb, data = df_stable_nomura_icb, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+                            title = "Stable Subtype Survival (ICB Nomura)", xlab = "Years",
+                            ylab = "Overall survival probability", palette = two_group_palette_9c,
+                            ggtheme = clean_theme_9c, break.time.by = 1)
+  print(p_nomura_icb)
+}
+
+print(create_transition_barplot(transition_data_icb_all, "couturier_transition", "ICB: STS vs LTS Transitions (Couturier)"))
+df_stable_couturier_icb <- transition_data_icb_all %>%
+  filter(couturier_transition %in% c("MES to MES", "non-MES to non-MES")) %>%
+  mutate(mes_transition = factor(couturier_transition, levels = c("non-MES to non-MES", "MES to MES")))
+if(nrow(df_stable_couturier_icb) > 0) {
+  fit_couturier_icb <- survfit(Surv(osicb_years, status_logical) ~ mes_transition, data = df_stable_couturier_icb)
+  p_couturier_icb <- ggsurvplot(fit_couturier_icb, data = df_stable_couturier_icb, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+                                 title = "Stable Subtype Survival (ICB Couturier)", xlab = "Years",
+                                 ylab = "Overall survival probability", palette = two_group_palette_9c,
+                                 ggtheme = clean_theme_9c, break.time.by = 1)
+  print(p_couturier_icb)
+}
+
+clean_theme_9c <- theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour = "black")
+  )
+two_group_palette_9c <- c("#4E84C4", "#BF1E2E")
+bar_plot_text_size_9c <- 7
+
+create_transition_barplot <- function(data, transition_col, title) {
+  mes_label <- "MES to MES"; mes_non_label <- "MES to non-MES"; non_mes_label <- "non-MES to MES"; non_non_label <- "non-MES to non-MES"
+  if (transition_col == "garofano_transition") {
+    mes_label <- "GPM to GPM"; mes_non_label <- "GPM to non-GPM"; non_mes_label <- "non-GPM to GPM"; non_non_label <- "non-GPM to non-GPM"
+  }
+  paired_n <- data %>%
+    filter(!is.na(!!sym(transition_col))) %>%
+    group_by(survival_group, !!sym(transition_col)) %>%
+    summarize(count = n(), .groups = 'drop') %>%
+    mutate(surv_bin = factor(survival_group, levels = c("STS", "LTS")))
+  bar_plot <- ggplot(paired_n, aes(x = surv_bin, y = count, fill = !!sym(transition_col))) +
+    geom_bar(stat = "identity", position = "fill") +
+    geom_text(aes(label = count), position = position_fill(vjust = 0.5), color = "white", size = bar_plot_text_size_9c) +
+    labs(title = title, x = "Survival group", y = "Proportion", fill = "Subtype transition") +
+    scale_fill_manual(
+      values = setNames(c("#BE202E", "#F59898", "#A4CCE1", "#4D83C3"), 
+                        c(mes_label, mes_non_label, non_mes_label, non_non_label))
+    ) +
+    clean_theme_9c
+  return(bar_plot)
+}
+
+transition_data_glass_all <- transition_data_glass %>%
+  mutate(
+    verhaak_transition = case_when(
+      Verhaak_pre == "MESENCHYMAL" & Verhaak_post == "MESENCHYMAL" ~ "MES to MES",
+      Verhaak_pre == "MESENCHYMAL" ~ "MES to non-MES",
+      Verhaak_post == "MESENCHYMAL" ~ "non-MES to MES",
+      TRUE ~ "non-MES to non-MES"
+    ),
+    neftel_transition = case_when(
+      (grepl("MES", Neftel_pre)) & (grepl("MES", Neftel_post)) ~ "MES to MES",
+      (grepl("MES", Neftel_pre)) ~ "MES to non-MES",
+      (grepl("MES", Neftel_post)) ~ "non-MES to MES",
+      TRUE ~ "non-MES to non-MES"
+    ),
+    garofano_transition = case_when(
+      Garofano_pre == "GPM" & Garofano_post == "GPM" ~ "GPM to GPM",
+      Garofano_pre == "GPM" ~ "GPM to non-GPM",
+      Garofano_post == "GPM" ~ "non-GPM to GPM",
+      TRUE ~ "non-GPM to non-GPM"
+    ),
+    nomura_transition = case_when(
+      Nomura_pre == "MES" & Nomura_post == "MES" ~ "MES to MES",
+      Nomura_pre == "MES" ~ "MES to non-MES",
+      Nomura_post == "MES" ~ "non-MES to MES",
+      TRUE ~ "non-MES to non-MES"
+    ),
+    couturier_transition = case_when(
+      Couturier_pre %in% c("MES1", "MES2") & Couturier_post %in% c("MES1", "MES2") ~ "MES to MES",
+      Couturier_pre %in% c("MES1", "MES2") ~ "MES to non-MES",
+      Couturier_post %in% c("MES1", "MES2") ~ "non-MES to MES",
+      TRUE ~ "non-MES to non-MES"
+    )
+  )
+
+print(create_transition_barplot(transition_data_glass_all, "neftel_transition", "GLASS: STS vs LTS Transitions (Neftel)"))
+df_stable_neftel <- transition_data_glass_all %>%
+  filter(neftel_transition %in% c("MES to MES", "non-MES to non-MES")) %>%
+  mutate(mes_transition = factor(neftel_transition, levels = c("non-MES to non-MES", "MES to MES")))
+if(nrow(df_stable_neftel) > 0) {
+  fit_neftel <- survfit(Surv(os_years, status_logical) ~ mes_transition, data = df_stable_neftel)
+  p_neftel <- ggsurvplot(fit_neftel, data = df_stable_neftel, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+                         title = "Stable Subtype Survival (GLASS Neftel)", xlab = "Years",
+                         ylab = "Overall survival probability", palette = two_group_palette_9c,
+                         ggtheme = clean_theme_9c, break.time.by = 1)
+  print(p_neftel)
+}
+
+print(create_transition_barplot(transition_data_glass_all, "garofano_transition", "GLASS: STS vs LTS Transitions (Garofano)"))
+df_stable_garofano <- transition_data_glass_all %>%
+  filter(garofano_transition %in% c("GPM to GPM", "non-GPM to non-GPM")) %>%
+  mutate(gpm_transition = factor(garofano_transition, levels = c("non-GPM to non-GPM", "GPM to GPM")))
+if(nrow(df_stable_garofano) > 0) {
+  fit_garofano <- survfit(Surv(os_years, status_logical) ~ gpm_transition, data = df_stable_garofano)
+  p_garofano <- ggsurvplot(fit_garofano, data = df_stable_garofano, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+                           title = "Stable Subtype Survival (GLASS Garofano)", xlab = "Years",
+                           ylab = "Overall survival probability", palette = two_group_palette_9c,
+                           ggtheme = clean_theme_9c, break.time.by = 1)
+  print(p_garofano)
+}
+
+print(create_transition_barplot(transition_data_glass_all, "nomura_transition", "GLASS: STS vs LTS Transitions (Nomura)"))
+df_stable_nomura <- transition_data_glass_all %>%
+  filter(nomura_transition %in% c("MES to MES", "non-MES to non-MES")) %>%
+  mutate(mes_transition = factor(nomura_transition, levels = c("non-MES to non-MES", "MES to MES")))
+if(nrow(df_stable_nomura) > 0) {
+  fit_nomura <- survfit(Surv(os_years, status_logical) ~ mes_transition, data = df_stable_nomura)
+  p_nomura <- ggsurvplot(fit_nomura, data = df_stable_nomura, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+                         title = "Stable Subtype Survival (GLASS Nomura)", xlab = "Years",
+                         ylab = "Overall survival probability", palette = two_group_palette_9c,
+                         ggtheme = clean_theme_9c, break.time.by = 1)
+  print(p_nomura)
+}
+
+print(create_transition_barplot(transition_data_glass_all, "couturier_transition", "GLASS: STS vs LTS Transitions (Couturier)"))
+df_stable_couturier <- transition_data_glass_all %>%
+  filter(couturier_transition %in% c("MES to MES", "non-MES to non-MES")) %>%
+  mutate(mes_transition = factor(couturier_transition, levels = c("non-MES to non-MES", "MES to MES")))
+if(nrow(df_stable_couturier) > 0) {
+  fit_couturier <- survfit(Surv(os_years, status_logical) ~ mes_transition, data = df_stable_couturier)
+  p_couturier <- ggsurvplot(fit_couturier, data = df_stable_couturier, pval = TRUE, conf.int = FALSE, risk.table = TRUE,
+                             title = "Stable Subtype Survival (GLASS Couturier)", xlab = "Years",
+                             ylab = "Overall survival probability", palette = two_group_palette_9c,
+                             ggtheme = clean_theme_9c, break.time.by = 1)
+  print(p_couturier)
+}
+```
+
+# Extended Data Fig. 9d
+
+Comparison of non-MES transition and MES stability in pre-treatment MES tumors between LTS/STS groups in ICB and GLASS cohorts.
+
+```{r}
+icb_pre_mes_9d <- transition_data_verhaak_icb %>%
+  filter(Pre == "MES") %>% 
+  select(survival_group, transition_group) %>%
+  mutate(cohort = "ICB")
+
+glass_pre_mes_9d <- transition_data_glass %>%
+  filter(Verhaak_pre == "MESENCHYMAL" & !is.na(Verhaak_post)) %>%
+  mutate(transition_group = ifelse(Verhaak_post == "MESENCHYMAL", "MES to MES", "MES to non-MES")) %>%
+  select(survival_group, transition_group) %>%
+  mutate(cohort = "GLASS")
+
+combined_data_9d <- bind_rows(icb_pre_mes_9d, glass_pre_mes_9d) %>%
+  mutate(
+    survival_group = factor(survival_group, levels = c("STS", "LTS")),
+    transition_group = factor(transition_group, levels = c("MES to MES", "MES to non-MES"))
+  )
+
+icb_plot_counts <- icb_pre_mes_9d %>%
+  mutate(
+    survival_group = factor(survival_group, levels = c("STS", "LTS")),
+    transition_group = factor(transition_group, levels = c("MES to MES", "MES to non-MES"))
+  ) %>%
+  count(survival_group, transition_group)
+
+plot_icb <- ggplot(icb_pre_mes_9d, aes(x = factor(survival_group, levels = c("STS", "LTS")), fill = factor(transition_group, levels = c("MES to MES", "MES to non-MES")))) +
+  geom_bar(position = "fill", color = "black", width = 0.8) +
+  geom_text(
+    data = icb_plot_counts,
+    aes(label = n, y = n), 
+    position = position_fill(vjust = 0.5),
+    color = "white", size = bar_plot_text_size
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = c("MES to MES" = "#BE202E", "MES to non-MES" = "#F59898"), name = "Transition") +
+  labs(
+    title = "ICB: pre-ICB MES Transitions",
+    x = "Survival Group",
+    y = "Proportion of pre-ICB MES"
+  ) +
+  clean_theme
+
+print(plot_icb)
+
+glass_plot_counts <- glass_pre_mes_9d %>%
+  mutate(
+    survival_group = factor(survival_group, levels = c("STS", "LTS")),
+    transition_group = factor(transition_group, levels = c("MES to MES", "MES to non-MES"))
+  ) %>%
+  count(survival_group, transition_group)
+
+plot_glass <- ggplot(glass_pre_mes_9d, aes(x = factor(survival_group, levels = c("STS", "LTS")), fill = factor(transition_group, levels = c("MES to MES", "MES to non-MES")))) +
+  geom_bar(position = "fill", color = "black", width = 0.8) +
+  geom_text(
+    data = glass_plot_counts,
+    aes(label = n, y = n), 
+    position = position_fill(vjust = 0.5),
+    color = "white", size = bar_plot_text_size
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = c("MES to MES" = "#BE202E", "MES to non-MES" = "#F59898"), name = "Transition") +
+  labs(
+    title = "GLASS: pre-ICB MES Transitions",
+    x = "Survival Group",
+    y = "Proportion of pre-ICB MES"
+  ) +
+  clean_theme
+
+print(plot_glass)
+
+sts_table_9d <- combined_data_9d %>%
+  filter(survival_group == "STS") %>%
+  count(cohort, transition_group) %>%
+  pivot_wider(names_from = transition_group, values_from = n, values_fill = 0)
+
+if (nrow(sts_table_9d) == 2 && all(c("ICB", "GLASS") %in% sts_table_9d$cohort) && "MES to non-MES" %in% colnames(sts_table_9d)) {
+  x1_sts <- sts_table_9d$`MES to non-MES`[sts_table_9d$cohort == "ICB"]
+  n1_sts <- sum(sts_table_9d[sts_table_9d$cohort == "ICB", -1])
+  x2_sts <- sts_table_9d$`MES to non-MES`[sts_table_9d$cohort == "GLASS"]
+  n2_sts <- sum(sts_table_9d[sts_table_9d$cohort == "GLASS", -1])
+  
+  sts_test <- boschloo(x1_sts, n1_sts, x2_sts, n2_sts, alternative = "two.sided", tsmethod = "minlike")
+  print(sts_test)
+}
+
+lts_table_9d <- combined_data_9d %>%
+  filter(survival_group == "LTS") %>%
+  count(cohort, transition_group) %>%
+  pivot_wider(names_from = transition_group, values_from = n, values_fill = 0)
+
+if (nrow(lts_table_9d) == 2 && all(c("ICB", "GLASS") %in% lts_table_9d$cohort) && "MES to non-MES" %in% colnames(lts_table_9d)) {
+  x1_lts <- lts_table_9d$`MES to non-MES`[lts_table_9d$cohort == "ICB"]
+  n1_lts <- sum(lts_table_9d[lts_table_9d$cohort == "ICB", -1])
+  x2_lts <- lts_table_9d$`MES to non-MES`[lts_table_9d$cohort == "GLASS"]
+  n2_lts <- sum(lts_table_9d[lts_table_9d$cohort == "GLASS", -1])
+  
+  lts_test <- boschloo(x1_lts, n1_lts, x2_lts, n2_lts, alternative = "two.sided", tsmethod = "minlike")
+  print(lts_test)
+}
+```
+
+# Extended Data Fig. 9e and f
+
+Correlation and stacked bar plot of MES/PN ratio change and survival in pre-ICB MES tumors in ICB cohort.
+
+```{r}
+bar_plot_text_size_9f <- 7 
+boschloo_data_icb_9f <- analysis_data_icb_9e %>%
+  mutate(
+    change_group = factor(
+      ifelse(fold_change <= (1 / 1.25), "Decreased", "Stable or Increased"),
+      levels = c("Decreased", "Stable or Increased")
+    )
+  )
+
+if (nrow(boschloo_data_icb_9f) >= 2) {
+    contingency_table <- table(boschloo_data_icb_9f$survival_group, boschloo_data_icb_9f$change_group)
+    p_val_9f <- NA
+    
+    if (all(c("STS", "LTS") %in% rownames(contingency_table))) {
+        x1 <- ifelse("Stable or Increased" %in% colnames(contingency_table), 
+                     contingency_table["STS", "Stable or Increased"], 0)
+        n1 <- sum(contingency_table["STS", ])
+        x2 <- ifelse("Stable or Increased" %in% colnames(contingency_table), 
+                     contingency_table["LTS", "Stable or Increased"], 0)
+        n2 <- sum(contingency_table["LTS", ])
+        
+        if (n1 > 0 && n2 > 0) {
+            tryCatch({
+                res <- boschloo(x1, n1, x2, n2, alternative = "two.sided", tsmethod = "minlike")
+                p_val_9f <- res$p.value
+            }, error = function(e) { })
+        }
+    }
+    
+    plot_counts_9f <- boschloo_data_icb_9f %>% count(survival_group, change_group)
+    
+    p_bar_icb_9f <- ggplot(boschloo_data_icb_9f, aes(x = survival_group, fill = change_group)) +
+      geom_bar(position = "fill", color = "black", width = 0.7) +
+      scale_y_continuous(labels = scales::percent_format(accuracy = 1), name = "Proportion") +
+      scale_fill_manual(values = c("Decreased" = "#F89B96", "Stable or Increased" = "#D22B2B"), name = "Ratio Change") +
+      labs(title = "ICB: MES/PN Ratio Change", 
+           subtitle = "For pre-ICB MES", 
+           x = "Survival Group") +
+      theme_classic(base_size = 14) +
+      theme(plot.margin = margin(30, 10, 10, 10)) +
+      coord_cartesian(ylim = c(0, 1), clip = "off")
+    
+    for(i in 1:nrow(plot_counts_9f)) {
+        grp <- plot_counts_9f$survival_group[i]
+        dir <- plot_counts_9f$change_group[i]
+        cnt <- plot_counts_9f$n[i]
+        
+        grp_data <- boschloo_data_icb_9f %>% filter(survival_group == grp)
+        total <- nrow(grp_data)
+        
+        if(total > 0) {
+            if(dir == "Decreased") {
+                y_pos <- sum(grp_data$change_group == "Decreased") / total / 2
+            } else { 
+                decreased_prop <- sum(grp_data$change_group == "Decreased") / total
+                stable_increased_prop <- sum(grp_data$change_group == "Stable or Increased") / total
+                y_pos <- decreased_prop + (stable_increased_prop / 2)
+            }
+            x_pos <- ifelse(grp == "STS", 1, 2)
+            p_bar_icb_9f <- p_bar_icb_9f + 
+                annotate("text", x = x_pos, y = y_pos, 
+                         label = as.character(cnt), 
+                         color = "white", size = 8)
+        }
+    }
+    
+    if (!is.na(p_val_9f)) {
+        p_label <- ifelse(p_val_9f < 0.001, "P < 0.001", 
+                          sprintf("P = %.3f", p_val_9f))
+        p_bar_icb_9f <- p_bar_icb_9f + 
+            annotate("segment", x = 1, xend = 2, y = 1.05, yend = 1.05, 
+                     color = "black", size = 0.5) +
+            annotate("segment", x = 1, xend = 1, y = 1.02, yend = 1.05, 
+                     color = "black", size = 0.5) +
+            annotate("segment", x = 2, xend = 2, y = 1.02, yend = 1.05, 
+                     color = "black", size = 0.5) +
+            annotate("text", x = 1.5, y = 1.08, 
+                     label = p_label, 
+                     size = 6, fontface = "italic")
+    } else {
+        p_bar_icb_9f <- p_bar_icb_9f + 
+            annotate("text", x = 1.5, y = 1.08, 
+                     label = "P = N/A", 
+                     size = 6, fontface = "italic", color = "gray50")
+    }
+    
+    print(p_bar_icb_9f)
+} 
+
+correlation_data_icb_9e <- analysis_data_icb_9e %>% 
+  mutate(log2_fold_change = log2(PostTx / PreTx))
+
+if (nrow(correlation_data_icb_9e) >= 3) {
+    pearson_test <- cor.test(correlation_data_icb_9e$log2_fold_change, 
+                             correlation_data_icb_9e$osicb, 
+                             method = "pearson")
+    r_val <- pearson_test$estimate
+    p_val_corr <- pearson_test$p.value
+    
+    if (p_val_corr < 0.001) {
+        annotation_text <- sprintf("r = %.2f, P < 0.001", r_val)
+    } else {
+        annotation_text <- sprintf("r = %.2f, P = %.3f", r_val, p_val_corr)
+    }
+    
+    p_corr_icb_9e <- ggplot(correlation_data_icb_9e, aes(x = log2_fold_change, y = osicb)) +
+      geom_smooth(method = "lm", se = TRUE, color = "black", fill = "grey80") +
+      geom_point(shape = 21, size = 4, stroke = 1, 
+                 fill = "#E47A7E", color = "#D44D52", alpha = 0.8) +
+      annotate("text", x = -Inf, y = Inf, 
+               label = annotation_text, 
+               hjust = -0.1, vjust = 2, 
+               size = 5, fontface = "italic") +
+      labs(title = "ICB: Correlation of Ratio Change vs. Survival", 
+           subtitle = "For pre-ICB MES", 
+           x = "Log2 Fold Change of MES/PN Ratio", 
+           y = "Overall Survival (days)") +
+      theme_classic(base_size = 14)
+    
+    print(p_corr_icb_9e)
+}
+```
+
+# Extended Data Fig. 9g and h
+
+Correlation and stacked bar plot of MES/PN ratio change and survival in pre-treatment MES tumors in GLASS cohort.
+
+```{r}
+bar_plot_text_size_9h <- 7 
+boschloo_data_glass_9h <- analysis_data_glass_9g %>%
+  mutate(
+    change_group = factor(
+      ifelse(fold_change <= (1 / 1.25), "Decreased", "Stable or Increased"),
+      levels = c("Decreased", "Stable or Increased")
+    )
+  )
+
+if (nrow(boschloo_data_glass_9h) >= 2) {
+    contingency_table <- table(boschloo_data_glass_9h$survival_group, boschloo_data_glass_9h$change_group)
+    p_val_9h <- NA
+    
+    if (all(c("STS", "LTS") %in% rownames(contingency_table))) {
+        x1 <- ifelse("Stable or Increased" %in% colnames(contingency_table), 
+                     contingency_table["STS", "Stable or Increased"], 0)
+        n1 <- sum(contingency_table["STS", ])
+        x2 <- ifelse("Stable or Increased" %in% colnames(contingency_table), 
+                     contingency_table["LTS", "Stable or Increased"], 0)
+        n2 <- sum(contingency_table["LTS", ])
+        
+        if (n1 > 0 && n2 > 0) {
+            tryCatch({
+                res <- boschloo(x1, n1, x2, n2, alternative = "two.sided", tsmethod = "minlike")
+                p_val_9h <- res$p.value
+            }, error = function(e) { })
+        }
+    }
+    
+    plot_counts_9h <- boschloo_data_glass_9h %>% count(survival_group, change_group)
+    
+    p_bar_glass_9h <- ggplot(boschloo_data_glass_9h, aes(x = survival_group, fill = change_group)) +
+      geom_bar(position = "fill", color = "black", width = 0.7) +
+      scale_y_continuous(labels = scales::percent_format(accuracy = 1), name = "Proportion") +
+      scale_fill_manual(values = c("Decreased" = "#F89B96", "Stable or Increased" = "#D22B2B"), name = "Ratio Change") +
+      labs(title = "GLASS: MES/PN Ratio Change", 
+           subtitle = "For pre-ICB MES", 
+           x = "Survival Group") +
+      theme_classic(base_size = 14) +
+      theme(plot.margin = margin(30, 10, 10, 10)) +
+      coord_cartesian(ylim = c(0, 1), clip = "off")
+    
+    for(i in 1:nrow(plot_counts_9h)) {
+        grp <- plot_counts_9h$survival_group[i]
+        dir <- plot_counts_9h$change_group[i]
+        cnt <- plot_counts_9h$n[i]
+        
+        grp_data <- boschloo_data_glass_9h %>% filter(survival_group == grp)
+        total <- nrow(grp_data)
+        
+        if(total > 0) {
+            if(dir == "Decreased") {
+                y_pos <- sum(grp_data$change_group == "Decreased") / total / 2
+            } else { 
+                decreased_prop <- sum(grp_data$change_group == "Decreased") / total
+                stable_increased_prop <- sum(grp_data$change_group == "Stable or Increased") / total
+                y_pos <- decreased_prop + (stable_increased_prop / 2)
+            }
+            x_pos <- ifelse(grp == "STS", 1, 2)
+            p_bar_glass_9h <- p_bar_glass_9h + 
+                annotate("text", x = x_pos, y = y_pos, 
+                         label = as.character(cnt), 
+                         color = "white", size = 8)
+        }
+    }
+    
+    if (!is.na(p_val_9h)) {
+        p_label <- ifelse(p_val_9h < 0.001, "P < 0.001", 
+                          sprintf("P = %.3f", p_val_9h))
+        p_bar_glass_9h <- p_bar_glass_9h + 
+            annotate("segment", x = 1, xend = 2, y = 1.05, yend = 1.05, 
+                     color = "black", size = 0.5) +
+            annotate("segment", x = 1, xend = 1, y = 1.02, yend = 1.05, 
+                     color = "black", size = 0.5) +
+            annotate("segment", x = 2, xend = 2, y = 1.02, yend = 1.05, 
+                     color = "black", size = 0.5) +
+            annotate("text", x = 1.5, y = 1.08, 
+                     label = p_label, 
+                     size = 6, fontface = "italic")
+    } else {
+        p_bar_glass_9h <- p_bar_glass_9h + 
+            annotate("text", x = 1.5, y = 1.08, 
+                     label = "P = N/A", 
+                     size = 6, fontface = "italic", color = "gray50")
+    }
+    
+    print(p_bar_glass_9h)
+} 
+
+if (nrow(correlation_data_glass_9g) >= 3) {
+    pearson_test <- cor.test(correlation_data_glass_9g$log2_fold_change, 
+                             correlation_data_glass_9g$os_days, 
+                             method = "pearson")
+    r_val <- pearson_test$estimate
+    p_val_corr <- pearson_test$p.value
+    
+    if (p_val_corr < 0.001) {
+        annotation_text <- sprintf("r = %.2f, P < 0.001", r_val)
+    } else {
+        annotation_text <- sprintf("r = %.2f, P = %.3f", r_val, p_val_corr)
+    }
+    
+    p_corr_glass_9g <- ggplot(correlation_data_glass_9g, aes(x = log2_fold_change, y = os_days)) +
+      geom_smooth(method = "lm", se = TRUE, color = "black", fill = "grey80") +
+      geom_point(shape = 21, size = 4, stroke = 1, 
+                 fill = "#E47A7E", color = "#D44D52", alpha = 0.8) +
+      annotate("text", x = -Inf, y = Inf, 
+               label = annotation_text, 
+               hjust = -0.1, vjust = 2, 
+               size = 5, fontface = "italic") +
+      labs(title = "GLASS: Correlation of Ratio Change vs. Survival", 
+           subtitle = "For pre-ICB MES", 
+           x = "Log2 Fold Change of MES/PN Ratio", 
+           y = "Overall Survival (days)") +
+      theme_classic(base_size = 14)
+    
+    print(p_corr_glass_9g)
+}
+```
+
+# Extended Data Fig. 10c
+
+Kaplan-Meier survival curve for ICB cohort patients stratified by Neftel MES1 vs. MES2 status.
+
+```{r}
+n_10c <- with(df_10c, table(subtype_factor))
+legend_labels_10c <- paste0(c("MES1", "MES2"), " (N=", n_10c, ")")
+max_time_10c <- ceiling(max(df_10c$osicb_years, na.rm = TRUE))
+fit_10c <- survfit(Surv(osicb_years, event_status) ~ subtype_factor, data = df_10c)
+
+plot_10c <- ggsurvplot(
+  fit_10c, data = df_10c, 
+  pval = TRUE, 
+  conf.int = FALSE, 
+  risk.table = TRUE,
+  ggtheme = theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line()),
+  palette = "jco",
+  ylab = "Fraction Surviving", 
+  xlab = "Years", 
+  xlim = c(0, max_time_10c), 
+  break.x.by = 1,
+  legend.labs = legend_labels_10c, 
+  title = "ICB Cohort: Neftel MES1 vs. MES2"
+)
+
+print(plot_10c)
+```
