@@ -34,7 +34,7 @@ library(broom)
 library(patchwork)
 library(readxl)
 
-zenodo_dir_path <- "../data/bulk_transcriptional_classifiers_survival"
+zenodo_dir_path <- "../data/bulk_transcriptional_classifiers"
 
 icb_data_raw <- read_tsv(file.path(zenodo_dir_path, "icb_cohort_unified.tsv"), show_col_types = FALSE)
 glass_data_raw <- read_tsv(file.path(zenodo_dir_path, "glass_cohort_clinical_subtypes.tsv"), show_col_types = FALSE)
