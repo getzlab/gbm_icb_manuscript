@@ -1,0 +1,1772 @@
+---
+title: "Extended_figure_7_snRNAseq_data"
+format: html
+editor: visual
+---
+
+Load libraries, data and plotting themes
+
+```{r setup, include=FALSE}
+
+# load libraries
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(ggh4x)
+library(scales)
+library(dendextend)
+library(patchwork)
+library(stringr)
+library(survival)
+library(coxphf)
+
+
+# load data
+metadata_ICB <- readRDS(file = "../data/metadata_ICB.rds")
+metadata_ICB %>% dim() # 666948  15
+
+project_metadata <- readRDS(file = "../data/Single cell portal/project_metadata_ICB.rds")
+
+pseudobulk_pre_path <- "../data/pseudobulks_by_sample_cell_type_pre_TPM.rds"
+pseudobulks_pre_tpm <- readRDS(pseudobulk_pre_path)
+
+
+# generate ggplot themes
+base_theme <- function() {
+  
+  theme_classic(base_size = 25) + 
+    theme(plot.title = element_text(face = "bold"), plot.title.position = "plot", plot.subtitle = element_text(lineheight = 1.1),
+          axis.line = element_blank()
+    )
+  
+}
+
+umap_theme <- function() {
+  
+  base_theme() +
+    theme(axis.ticks = element_blank(), axis.text = element_blank(),
+          axis.title.x = element_text(hjust = 0.1), axis.title.y = element_text(hjust = 0.1), axis.title = element_text(size = 14)
+    )
+  
+}
+
+default_theme <- function() {
+  
+  theme_classic(base_size = 25) + 
+    theme(plot.title = element_text(face = "bold"), plot.title.position = "plot", plot.subtitle = element_text(lineheight = 1.1),
+          strip.text = element_text(size = 20),
+          panel.grid.minor.y = element_line(linewidth = 0.25, linetype = 1),
+          panel.grid.major.y = element_line(linewidth = 0.5, linetype = 1),
+    )
+  
+}
+
+default_theme_border <- function() {
+  
+  default_theme() + 
+    theme(panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank())
+  
+}
+
+default_theme_xrot_90 <- function() {
+  
+  default_theme() +
+    theme(axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1))
+}
+
+default_theme_xrot_90_border <- function() {
+  
+  default_theme() +
+    theme(axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank())
+}
+
+
+# load color palettes
+HEATMAP_LOW_VALUE_C <- "#3C5488"
+HEATMAP_HIGH_VALUE_C <- "#E64B35"
+
+SURVIVAL_LS_C <- "#D494B9" 
+SURVIVAL_SS_C <- "#32B18F" 
+
+SURVIVAL_LS_MALIGNANT_C <- "#B22222" 
+SURVIVAL_SS_MALIGNANT_C <- "#F08080"
+
+SURVIVAL_LS_NON_MALIGNANT_C <- "#2C6BA0" 
+SURVIVAL_SS_NON_MALIGNANT_C <- "#9CC9FF" 
+
+RX_UNTREATED_C <- "#4A6274"
+RX_TREATED_C <- "#E294AF" 
+
+RX_PRE_ICB_C <- "#4089B2"
+RX_POST_ICB_C <- "#DC8848"
+
+
+VERHAAK_SUBTYPE_MESENCHYMAL_C <- "#D62727"
+VERHAAK_SUBTYPE_CLASSICAL_C <- "#F39354"
+VERHAAK_SUBTYPE_NEURAL_C <- "#96A6AF"
+VERHAAK_SUBTYPE_PRONEURAL_C <- "#1F73AF"
+
+
+GBM_STATE_AC_C <- "#FFCC80"
+GBM_STATE_GPC_C <- "#B39DDB"
+GBM_STATE_MES_C <- "#EF9A9A"
+GBM_STATE_NPC_C <- "#B0BEC5"
+GBM_STATE_OPC_C <- "#90CAF9"
+GBM_STATE_ND_C <- "white"
+
+CELL_TYPE_MALIGNANT_C <- "#C2185B"
+CELL_TYPE_OLIGODENDROCYTE_C <- "#FF6961"
+CELL_TYPE_MYELOID_C <- "#FFB480"
+CELL_TYPE_ASTROCYTES_C <- "#F8F38D"
+CELL_TYPE_NEURONS_C <- "#D4E157"
+CELL_TYPE_ENDOTHELIAL_C <- "#81C784"
+CELL_TYPE_PERICYTES_C <- "#42d6a4"
+CELL_TYPE_T_CELL_C <- "#59adf6"
+CELL_TYPE_NK_CELL_C <- "#9d94ff"
+
+
+# create utilities functions
+`%!in%` <- Negate(`%in%`)
+
+```
+
+# Figure 2i
+
+MES Score Bivariate Survival Analysis with Forest Plot. Calculate MES scores over pseudo-bulk objects (on a per-sample basis), run bivariate Cox model, create forest plot.
+
+```{r Fig.2i-MES-signal-source-vs-survival}
+
+library(coxphf)
+library(survival)
+
+VERHAAK_MES_GENES <- c("ACP3","ACSL1","ADAM12","ALDH3B1","ALOX5","AMPD3","ANXA1","ANXA2",
+                       "ANXA4","ARHGAP29","ARPC1B","ARSJ","ASL","BATF","BDKRB2","BLVRB","BNC2",
+                       "C1orf54","C5AR1","CASP1","CASP4","CASP5","CASP8","CAST","CAVIN1",
+                       "CCR5","CD14","CD2AP","CD4","CDCP1","CEBPB","CHI3L1","CLCF1","CLEC2B",
+                       "CLIC1","CNN2","COL1A1","COL1A2","COL5A1","COL8A2","COLGALT1","COPZ2",
+                       "CPQ","CRYBG1","CSTA","CTSB","CTSC","CTSZ","CYBRD1","CYTH4","CYTIP",
+                       "DAB2","DCBLD2","DOK3","DRAM1","DSC2","DSE","EFEMP2","EHD2","ELF4",
+                       "EMP3","ENG","FCGR2A","FCGR2B","FES","FHL2","FHOD1","FMNL1","FNDC3B",
+                       "FOLR2","FPR3","FURIN","FXYD5","GCNT1","GNA15","GRN","HEXA","HEXB",
+                       "HFE","HK3","ICAM3","IFI30","IGFBP6","IL15RA","IL1R1","IL4R","IQGAP1",
+                       "ITGA4","ITGA5","ITGAM","ITGB2","KYNU","LAIR1","LAMB1","LAPTM5","LCP1",
+                       "LCP2","LGALS1","LGALS3","LHFPL2","LILRB2","LILRB3","LOX","LRRFIP1",
+                       "LTBP1","LTBP2","LY75","LY96","MAFB","MAN1A1","MAN2A1","MAN2B1",
+                       "MAPK13","MCUB","MFSD1","MGAT1","MGST2","MRC2","MS4A4A","MSR1","MVP",
+                       "MYH9","MYO1F","MYOF","NCF2","NCF4","NOD2","NPC2","NRP1","P4HA2","PDPN",
+                       "PHF11","PIGP","PLA2G15","PLAU","PLAUR","PLBD1","PLK3","PLS3","POLD4",
+                       "PROCR","PTGER4","PTPN22","PTPN6","PTPRC","PYGL","RAB11FIP1","RAB27A",
+                       "RAB32","RABGAP1L","RAC2","RBKS","RBM47","RBMS1","RELB","RHOG","RRAS",
+                       "RUNX2","S100A11","S100A13","S100A4","SAT1","SCPEP1","SEC24D",
+                       "SERPINA1","SERPINE1","SFT2D2","SH2B3","SHC1","SIGLEC7","SIGLEC9",
+                       "SLAMF8","SLC10A3","SLC11A1","SLC16A3","SP100","SQOR","SRPX2","ST14",
+                       "STAB1","STAT6","STXBP2","SWAP70","SYNGR2","SYPL1","TCIRG1","TEC","TES",
+                       "TGFBI","TGFBR2","TGOLN2","THBD","THBS1","THEMIS2","TIMP1","TLR2",
+                       "TLR4","TMBIM1","TNFAIP3","TNFAIP8","TNFRSF11A","TNFRSF1A","TNFRSF1B",
+                       "TRADD","TRIM22","TRIM38","TRPM2","TYMP","UAP1","UCP2","VAMP5","VDR",
+                       "WIPF1","WWTR1","YAP1","ZNF217")
+
+
+
+# genereate malignant cells pseudobulks
+pseudobulks_malignant_by_sample_pre_TPM <-
+  pseudobulks_pre_tpm %>% 
+  reshape2::melt(varnames = c("gene_name", "sample_cell_type_id"), value.name = "exp") %>% 
+  tidyr::separate(col = "sample_cell_type_id", into = c("Sample_ID", "Cell_type"), sep = "[*]") %>% 
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::select(Cell_type, malignant_group) %>% unique(), by = "Cell_type") %>% 
+  dplyr::filter(malignant_group == "Malignant") %>% droplevels() %>% 
+  dplyr::group_by(gene_name, Sample_ID) %>% 
+  dplyr::summarise(Exp = sum(exp), .groups = "drop") %>% 
+  tidyr::pivot_wider(id_cols = c("gene_name"), names_from = "Sample_ID", values_from = "Exp", values_fill = 0) %>% 
+  tibble::column_to_rownames(var = "gene_name")
+
+pseudobulks_malignant_by_sample_pre_TPM %>% dim() # 36601  22
+
+
+# genereate non-malignant cells pseudobulks
+pseudobulks_non_malignant_by_sample_pre_TPM <-
+  pseudobulks_pre_tpm %>% 
+  reshape2::melt(varnames = c("gene_name", "sample_cell_type_id"), value.name = "exp") %>% 
+  tidyr::separate(col = "sample_cell_type_id", into = c("Sample_ID", "Cell_type"), sep = "[*]") %>% 
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::select(Cell_type, malignant_group) %>% unique(), by = "Cell_type") %>% 
+  dplyr::filter(malignant_group == "Non-malignant") %>% droplevels() %>% 
+  dplyr::group_by(gene_name, Sample_ID) %>% 
+  dplyr::summarise(Exp = sum(exp), .groups = "drop") %>% 
+  tidyr::pivot_wider(id_cols = c("gene_name"), names_from = "Sample_ID", values_from = "Exp", values_fill = 0) %>% 
+  tibble::column_to_rownames(var = "gene_name")
+
+pseudobulks_non_malignant_by_sample_pre_TPM %>% dim() # 36601  22
+
+
+all(colnames(pseudobulks_non_malignant_by_sample_pre_TPM) == colnames(pseudobulks_malignant_by_sample_pre_TPM)) # TRUE
+all(rownames(pseudobulks_non_malignant_by_sample_pre_TPM) == rownames(pseudobulks_malignant_by_sample_pre_TPM)) # TRUE
+
+
+colnames(pseudobulks_malignant_by_sample_pre_TPM) <- paste0(colnames(pseudobulks_malignant_by_sample_pre_TPM), "*Malignant")
+colnames(pseudobulks_non_malignant_by_sample_pre_TPM) <- paste0(colnames(pseudobulks_non_malignant_by_sample_pre_TPM), "*Non-malignant")
+
+
+# score the pseudobulk by the MESENCHYMAL gene set
+pseudobulks_malignant_group_by_sample_pre_verhaak_scores <-
+  cbind(log2(pseudobulks_malignant_by_sample_pre_TPM + 1),
+        log2(pseudobulks_non_malignant_by_sample_pre_TPM + 1)) %>% 
+  scalop::sigScores(sigs = list("Mesenchymal" = VERHAAK_MES_GENES), expr.center = FALSE) %>% 
+  tibble::rownames_to_column(var = "sample_malignant_group_id") %>% 
+  separate(col = "sample_malignant_group_id", into = c("Sample_ID", "malignant_group"), sep = "\\*") %>%
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::select(Patient_ID, Sample_ID) %>% unique(), by = "Sample_ID")
+
+
+PATIENTS_TO_EXCLUDE <- c("28", "182")
+
+# average scores over patient samples, and exclude patients with over 180 days from ICB treatment to tissue sampling
+pseudobulks_malignant_group_by_patient_pre_verhaak_MES_scores <- 
+  pseudobulks_malignant_group_by_sample_pre_verhaak_scores %>% 
+  dplyr::filter(Patient_ID %!in% PATIENTS_TO_EXCLUDE) %>% 
+  dplyr::select(Patient_ID, Sample_ID, malignant_group, Mesenchymal) %>% 
+  dplyr::group_by(malignant_group, Patient_ID) %>% 
+  dplyr::summarise(mean_MES_score = mean(Mesenchymal), .groups = "drop")
+
+
+# add patient survival information
+pseudobulks_malignant_group_by_patient_pre_verhaak_MES_summary <-
+  pseudobulks_malignant_group_by_patient_pre_verhaak_MES_scores %>% 
+  tidyr::pivot_wider(id_cols = c("Patient_ID"), names_from = "malignant_group", values_from = "mean_MES_score") %>% 
+  dplyr::left_join(project_metadata %>% 
+                     dplyr::select(Patient_ID, OS_ICB, Overall_survival_18m), by = "Patient_ID") %>% 
+  dplyr::mutate(status = 1)
+
+
+# calculate bi-variate Firth's COX-regression model
+firth_mes_only <- coxphf(Surv(OS_ICB, status) ~ Malignant + `Non-malignant`, 
+                         data = pseudobulks_malignant_group_by_patient_pre_verhaak_MES_summary)
+
+
+bivariate_results <- 
+  data.frame(
+    term = c("Malignant MES", "TME MES"),
+    hr = exp(firth_mes_only$coefficients),
+    conf.low = firth_mes_only$ci.lower,
+    conf.high = firth_mes_only$ci.upper,
+    p.value = firth_mes_only$prob,
+    n = rep(firth_mes_only$n, 2)) %>% 
+  rstatix::add_significance(p.col = "p.value")
+
+
+# Define capping limits for visualization
+LOWER_CAPPING_LIMIT <- 0.2
+UPPER_CAPPING_LIMIT <- 2.0
+
+
+plot_data <- bivariate_results %>%
+  mutate(
+    # Create display strings
+    hr_ci_str = sprintf("%.2f (%.2f–%.2f)", hr, conf.low, conf.high),
+    p_val_str = scales::pvalue(p.value, accuracy = 0.001, add_p = TRUE),
+    
+    # Add significance indicator
+    significance = ifelse(p.value < 0.05, "*", ""),
+    
+    # Create ordered factor for predictors (reverse order for top-to-bottom)
+    term_display = factor(term, levels = c("TME MES", "Malignant MES")),
+    
+    # Capping logic for confidence intervals
+    is_capped_low = conf.low < LOWER_CAPPING_LIMIT,
+    conf.low_capped = ifelse(is_capped_low, LOWER_CAPPING_LIMIT, conf.low),
+    is_capped_high = conf.high > UPPER_CAPPING_LIMIT,
+    conf.high_capped = ifelse(is_capped_high, UPPER_CAPPING_LIMIT, conf.high)
+  )
+
+
+
+p_table <- ggplot(plot_data, aes(y = term_display)) +
+  geom_text(aes(x = 0, label = n), hjust = 0.5, size = 4.5) +
+  geom_text(aes(x = 1, label = hr_ci_str), hjust = 0.5, size = 4.5) +
+  geom_text(aes(x = 2, label = p_val_str), hjust = 0.5, size = 4.5) +
+  annotate("text", x = 0, y = nlevels(plot_data$term_display) + 0.5, 
+           label = "N", fontface = "bold", size = 5) +
+  annotate("text", x = 1, y = nlevels(plot_data$term_display) + 0.5, 
+           label = "HR (95% CI)", fontface = "bold", size = 5) +
+  annotate("text", x = 2, y = nlevels(plot_data$term_display) + 0.5, 
+           label = "P-value", fontface = "bold", size = 5) +
+  theme_void() +
+  scale_y_discrete(expand = expansion(add = c(0.5, 1.0))) +
+  xlim(-0.5, 2.5)
+
+# Forest plot with error bars and point estimates
+p_forest <- ggplot(plot_data, aes(x = hr, y = term_display)) +
+  # Reference line at HR = 1
+  geom_vline(xintercept = 1.0, linetype = "dashed", color = "grey70", linewidth = 1.0) +
+  
+  # Confidence interval error bars
+  geom_errorbarh(aes(xmin = conf.low_capped, xmax = conf.high_capped), 
+                 height = 0.3, linewidth = 1.2) +
+  
+  # Arrows for capped lower limits
+  geom_segment(data = . %>% filter(is_capped_low),
+               aes(x = conf.low_capped, xend = conf.low_capped, 
+                   y = term_display, yend = term_display),
+               arrow = arrow(length = unit(0.2, "cm"), type = "open", ends = "first"),
+               lineend = "round", linewidth = 1.2) +
+  
+  # Arrows for capped upper limits
+  geom_segment(data = . %>% filter(is_capped_high),
+               aes(x = conf.high_capped, xend = conf.high_capped, 
+                   y = term_display, yend = term_display),
+               arrow = arrow(length = unit(0.2, "cm"), type = "open", ends = "last"),
+               lineend = "round", linewidth = 1.2) +
+  
+  # Point estimates with red fill
+  geom_point(size = 5, shape = 21, fill = "firebrick", color = "black", stroke = 1) +
+  
+  # Log scale for x-axis
+  scale_x_log10(
+    breaks = c(0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0),
+    labels = c("0.20", "0.30", "0.50", "0.75", "1.00", "1.50", "2.00")
+  ) +
+  coord_cartesian(xlim = c(0.18, 2.2)) +
+  
+  # Labels and theme
+  labs(
+    x = "Hazard Ratio (HR) per 1 SD Increase (log scale)", 
+    y = ""
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.x = element_line(color = "grey92", linetype = "dashed"),
+    axis.text.y = element_text(size = 13, face = "bold"),
+    axis.title.x = element_text(size = 12, face = "bold", margin = margin(t = 10))
+  )
+
+# ---------------------------------------------------------------------------
+# --- STEP 14: COMBINE AND SAVE FOREST PLOT ---
+# ---------------------------------------------------------------------------
+
+final_forest_plot <- p_forest + p_table +
+  plot_layout(widths = c(2.5, 2)) +
+  plot_annotation(
+    title = "Independent Effects of Malignant and TME MES Scores on Survival",
+    subtitle = "Bivariate Firth's Cox Regression Model (Both MES Scores, No Covariates)",
+    caption = paste(
+      sprintf("n = %d patients | Pre-ICB samples | Patients 28 & 182 excluded", unique(plot_data$n)),
+      "MES scores calculated using scalop::sigScores (Verhaak Mesenchymal signature)",
+      "HR per 1 standard deviation increase in MES score",
+      "* p < 0.05 indicates statistical significance",
+      sep = "\n"
+    ),
+    theme = theme(
+      plot.title = element_text(face = "bold", size = 18, hjust = 0.5, margin = margin(b = 5)),
+      plot.subtitle = element_text(size = 13, hjust = 0.5, margin = margin(b = 10)),
+      plot.caption = element_text(hjust = 0, size = 10, color = "grey40", margin = margin(t = 10))
+    )
+  )
+
+print(final_forest_plot)
+
+```
+
+# Figure 2j
+
+Compare HLA class I scores across different malignant cell-states over pseudo-bulk objects
+
+```{r Fig.2j-HLA-class-I-scores-by-malignant-subtype}
+
+library(Matrix)
+library(scalop)
+
+exp_mat_all_tpm_HLA <- readRDS("../data/exp_mat_all_tpm_HLA.rds")
+
+HLA_CLASS_I_GENES <- c("B2M", "HLA-A", "HLA-B", "HLA-C", "HLA-E", "HLA-F", "HLA-G", "HLA-H")
+genes_present <- HLA_CLASS_I_GENES[HLA_CLASS_I_GENES %in% rownames(exp_mat_all_tpm_HLA)]
+
+MIN_NUMBER_OF_CELL_PER_CELL_TYPE <- 5
+
+# FILTER TO PRE-ICB SAMPLES IMMEDIATELY
+sample_cell_type_counts_summary <- 
+  metadata_ICB %>%
+  dplyr::filter(Rx == "Pre-ICB") %>%  # <- FILTER UPFRONT HERE
+  group_by(Rx, Patient_ID, Sample_ID, malignant_group, Cell_type) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  dplyr::filter(count >= MIN_NUMBER_OF_CELL_PER_CELL_TYPE)
+
+# Calculate pseudobulk for ALL malignant cell types (including "Malignant (ND)")
+# Now only using Pre-ICB samples
+bulk_expression_by_cell_type_patient_malignant <- 
+  sample_cell_type_counts_summary %>%
+  dplyr::filter(malignant_group == "Malignant") %>%
+  droplevels() %>%
+  pull(Cell_type) %>% 
+  levels() %>%
+  map(function(cur_cell_type) {
+    
+    cat("Processing:", cur_cell_type, "\n")
+    
+    cur_cell_type_counts_summary <- sample_cell_type_counts_summary %>%
+      dplyr::filter(Cell_type == cur_cell_type) %>% 
+      droplevels()
+    
+    if (nrow(cur_cell_type_counts_summary) == 0) {
+      return(NULL)
+    }
+    
+    bulk_expression_cur_cell_type <- 
+      cur_cell_type_counts_summary$Sample_ID %>% unique() %>%
+      map(function(cur_cell_type_sample) {
+        
+        cur_cell_type_sample_cell_id <- metadata_ICB %>%
+          dplyr::filter(Cell_type == cur_cell_type, Sample_ID == cur_cell_type_sample) %>%
+          pull(Cell_ID)
+        
+        exp_subset <- exp_mat_all_tpm_HLA[, cur_cell_type_sample_cell_id, drop = FALSE]
+        log2(Matrix::rowMeans(exp_subset) + 1)
+        
+      }) %>% do.call(cbind, .)
+    
+    colnames(bulk_expression_cur_cell_type) <- cur_cell_type_counts_summary$Sample_ID %>% unique()
+    
+    bulk_expression_cur_cell_type %>%
+      reshape2::melt(varnames = c("gene_name", "Sample_ID"), value.name = "Exp") %>%
+      left_join(sample_cell_type_counts_summary %>%
+                  dplyr::filter(Cell_type == cur_cell_type) %>% 
+                  droplevels() %>%
+                  dplyr::select(Rx, Patient_ID, Sample_ID) %>% 
+                  unique(), 
+                by = "Sample_ID") %>%
+      group_by(Rx, Patient_ID, gene_name) %>%
+      summarise(mean_exp = mean(Exp), .groups = "drop") %>%
+      mutate(Cell_type = cur_cell_type)
+    
+  }) %>% 
+  keep(~ !is.null(.)) %>%
+  do.call(rbind, .) %>%
+  mutate_at(c("gene_name"), as.character)
+
+# EXCLUDE "Malignant (ND)" BEFORE centering
+# Now centering only across Pre-ICB samples
+bulk_expression_centered_matrix <- 
+  bulk_expression_by_cell_type_patient_malignant %>%
+  dplyr::filter(Cell_type != "Malignant (ND)") %>%  # FILTER BEFORE CENTERING
+  mutate(rx_patient_cell_type_id = paste0(Rx, "*", Patient_ID, "*", Cell_type)) %>%
+  pivot_wider(id_cols = c("gene_name"), 
+              names_from = "rx_patient_cell_type_id", 
+              values_from = "mean_exp") %>%
+  column_to_rownames(var = "gene_name") %>%
+  as.matrix() %>%
+  scalop::rowcenter()  # CENTERING ONLY PRE-ICB DATA
+
+# Calculate scores
+sig_scores <- bulk_expression_centered_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("gene_name") %>%
+  dplyr::filter(gene_name %in% genes_present) %>%
+  pivot_longer(-gene_name, names_to = "id", values_to = "centered_exp") %>%
+  group_by(id) %>%
+  summarise(HLA_score = mean(centered_exp, na.rm = TRUE), .groups = "drop") %>%
+  separate(id, into = c("Rx", "Patient_ID", "Cell_type"), sep = "\\*")
+  # NO FILTER HERE - already only Pre-ICB data
+
+# Order cell types by median HLA score (highest to lowest)
+cell_type_order <- sig_scores %>%
+  group_by(Cell_type) %>%
+  summarise(median_score = median(HLA_score, na.rm = TRUE)) %>%
+  arrange(desc(median_score)) %>%
+  pull(Cell_type)
+
+sig_scores <- sig_scores %>%
+  mutate(Cell_type = factor(Cell_type, levels = cell_type_order))
+
+# --- 6. STATISTICS ---
+my_comparisons <- list(
+  c("MES-like", "AC-like"),
+  c("MES-like", "GPC-like"),
+  c("MES-like", "NPC-like"),
+  c("MES-like", "OPC-like")
+)
+
+unpaired_results <- map_dfr(my_comparisons, function(comp) {
+  group1 <- comp[1]
+  group2 <- comp[2]
+  
+  data1 <- sig_scores %>% filter(Cell_type == group1) %>% pull(HLA_score)
+  data2 <- sig_scores %>% filter(Cell_type == group2) %>% pull(HLA_score)
+  
+  test <- t.test(data1, data2, paired = FALSE)
+  
+  data.frame(
+    comparison = paste(group1, "vs", group2),
+    group1 = group1,
+    group2 = group2,
+    n1 = length(data1),
+    n2 = length(data2),
+    p_value = test$p.value
+  )
+})
+
+paired_results <- map_dfr(my_comparisons, function(comp) {
+  group1 <- comp[1]
+  group2 <- comp[2]
+  
+  patients_with_both <- sig_scores %>%
+    filter(Cell_type %in% c(group1, group2)) %>%
+    group_by(Patient_ID) %>%
+    summarise(n_types = n_distinct(Cell_type), .groups = "drop") %>%
+    filter(n_types == 2) %>%
+    pull(Patient_ID)
+  
+  if (length(patients_with_both) < 3) {
+    return(data.frame(
+      comparison = paste(group1, "vs", group2),
+      group1 = group1,
+      group2 = group2,
+      n_paired = length(patients_with_both),
+      p_value = NA
+    ))
+  }
+  
+  paired_data <- sig_scores %>%
+    filter(Patient_ID %in% patients_with_both, Cell_type %in% c(group1, group2)) %>%
+    select(Patient_ID, Cell_type, HLA_score) %>%
+    pivot_wider(names_from = Cell_type, values_from = HLA_score)
+  
+  data1 <- paired_data %>% pull(!!sym(group1))
+  data2 <- paired_data %>% pull(!!sym(group2))
+  
+  test <- t.test(data1, data2, paired = TRUE)
+  
+  data.frame(
+    comparison = paste(group1, "vs", group2),
+    group1 = group1,
+    group2 = group2,
+    n_paired = length(patients_with_both),
+    p_value = test$p.value
+  )
+})
+
+# Print paired results to terminal
+cat("\n=== PAIRED T-TEST RESULTS ===\n")
+print(paired_results)
+cat("\n")
+
+# --- 7. PLOT ---
+malignant_colors <- c(
+  "NPC-like" = "#003399",
+  "OPC-like" = "#6699CC",
+  "AC-like" = "#FFB366",
+  "GPC-like" = "#FF8899",
+  "MES-like" = "#CC0000"
+)
+
+p_unpaired <- ggboxplot(
+  sig_scores, 
+  x = "Cell_type", 
+  y = "HLA_score",
+  fill = "Cell_type", 
+  palette = malignant_colors,
+  add = "jitter",
+  add.params = list(size = 2, alpha = 0.7),
+  outlier.shape = NA
+) +
+  stat_compare_means(
+    comparisons = my_comparisons, 
+    method = "t.test",
+    paired = FALSE,
+    label = "p.format",
+    size = 3.5,
+    tip.length = 0.01
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black", size = 10),
+    axis.text.y = element_text(color = "black", size = 10),
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.line = element_line(color = "black", size = 0.5),
+    axis.ticks = element_line(color = "black", size = 0.5),
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    plot.background = element_blank()
+  ) +
+  labs(
+    x = "",
+    y = "HLA Class I Score"
+  )
+
+print(p_unpaired)
+
+# Save to specified directory
+ggsave("/n/scratch/users/j/jag9838/GBM_ICB/outputs_final/HLA_Class_I_UNPAIRED_PreICB_upfront.pdf", 
+       plot = p_unpaired, width = 6, height = 5, dpi = 300, bg = "white")
+
+# Save results
+write.csv(unpaired_results, "unpaired_tests_results_class_I_PreICB_upfront.csv", row.names = FALSE)
+write.csv(paired_results, "paired_tests_results_class_I_PreICB_upfront.csv", row.names = FALSE)
+
+cat("=== Analysis Complete ===\n")
+cat("Plot saved to: /n/scratch/users/j/jag9838/GBM_ICB/outputs_final/HLA_Class_I_UNPAIRED_PreICB_upfront.pdf\n")
+```
+
+# Extended Data Figure 7d
+
+Expression of Verhaak signature genes across patient samples, with corresponding bulk-RNA and snRNA-seq Verhaak annotations
+
+```{r Ex.Fig.7d-Verhaak-classification-expression-by-patient}
+
+pseudobulks_by_sample_pre_TPM <- readRDS(file = "../data/pseudobulks_by_sample_pre_TPM.rds")
+pseudobulks_by_sample_cell_type_pre_TPM <- readRDS(file = "../data/pseudobulks_by_sample_cell_type_pre_TPM.rds")
+pseudobulks_by_sample_post_TPM <- readRDS(file = "../data/pseudobulks_by_sample_post_TPM.rds")
+pseudobulks_by_sample_cell_type_post_TPM <- readRDS(file = "../data/pseudobulks_by_sample_cell_type_post_TPM.rds")
+
+GBM_Verhaak_signatures_df <- readRDS(file = "../data/GBM_Verhaak_signatures_df.rds") 
+project_metadata_GBM_verhaak_subtypes <- readRDS(file = "../data/project_metadata_GBM_verhaak_subtypes.rds")
+
+
+
+# manually calculate the bulk-RNA state by the maximal GBM cell-state fraction
+metadata_malignant <- metadata_ICB %>% dplyr::filter(malignant_group == "Malignant") %>% droplevels()
+metadata_malignant %>% dim() # 345094  15
+  
+MIN_MALIGNANT_SAMPLE_SIZE <- 100
+
+SAMPLES_TO_EXCLUDE <-
+  metadata_malignant %>%
+  dplyr::group_by(Rx, Patient_ID, Sample_ID) %>%
+  dplyr::summarise(total_sample = n(), .groups = "drop") %>%
+  # dplyr::arrange(count) %>%
+  dplyr::filter(total_sample < MIN_MALIGNANT_SAMPLE_SIZE) %>%
+  dplyr::pull(Sample_ID)
+
+SAMPLES_TO_EXCLUDE %>% length() # 3
+
+
+
+pseudobulk_verhaak_sample_classifications <-
+  cbind(log2(pseudobulks_by_sample_pre_TPM + 1),
+        log2(pseudobulks_by_sample_post_TPM + 1)) %>% scalop::rowcenter() %>% 
+  scalop::sigScores(sigs = split(GBM_Verhaak_signatures_df$gene_name, GBM_Verhaak_signatures_df$sig_name), expr.center = FALSE) %>% 
+  dplyr::mutate(pseudobulk_verhaak_subtype = colnames(.)[max.col(.)]) %>% 
+  tibble::rownames_to_column(var = "Sample_ID")
+
+
+
+# (B) compare sample-level pseudo-bulks Verhaak mesenchymal expression
+pseudobulks_by_sample_pre_TPM %>% dim() # 36601  22
+
+pseudobulks_by_sample_GBM_Verhaak_summary <-
+  cbind(log2(pseudobulks_by_sample_pre_TPM[GBM_Verhaak_signatures_df$gene_name, ] + 1),
+        log2(pseudobulks_by_sample_post_TPM[GBM_Verhaak_signatures_df$gene_name, ] + 1)) %>% scalop::rowcenter() %>% 
+  reshape2::melt(varnames = c("gene_name", "Sample_ID"), value.name = "Exp") %>% 
+  dplyr::left_join(GBM_Verhaak_signatures_df, by = "gene_name", relationship = "many-to-many") %>%
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::group_by(Rx, Patient_ID, Sample_ID) %>% 
+                     dplyr::summarise(total_sample = n(), .groups = "drop"), by = "Sample_ID") %>% 
+  dplyr::left_join(project_metadata %>% 
+                     dplyr::select(Patient_ID, Overall_survival_18m), by = "Patient_ID") %>% 
+  dplyr::left_join(project_metadata_GBM_verhaak_subtypes %>% 
+                     dplyr::select(Patient_ID, Rx, bulk_verhaak_subtype = verhaak_subtype), by = c("Patient_ID", "Rx")) %>% 
+  dplyr::left_join(pseudobulk_verhaak_sample_classifications %>% 
+                     dplyr::select(Sample_ID, pseudobulk_verhaak_subtype), by = "Sample_ID")
+
+
+
+PATIENTS_TO_EXCLUDE <- c()
+
+pseudobulks_by_sample_GBM_Verhaak_summary_filtered <- 
+  pseudobulks_by_sample_GBM_Verhaak_summary %>% 
+  dplyr::filter(Patient_ID %!in% PATIENTS_TO_EXCLUDE,
+                Sample_ID %!in% SAMPLES_TO_EXCLUDE)
+
+
+# by patient
+pseudobulk_verhaak_patient_classifications <- 
+  pseudobulk_verhaak_sample_classifications %>% 
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::select(Rx, Patient_ID, Sample_ID) %>% unique(), by = "Sample_ID") %>% 
+  dplyr::group_by(Rx, Patient_ID) %>% 
+  dplyr::summarise(pseudobulk_verhaak_patient = case_when(n_distinct(pseudobulk_verhaak_subtype) == 1 ~ unique(pseudobulk_verhaak_subtype),
+                                                          .default = NA), .groups = "drop")
+
+# pseudobulk_verhaak_patient_classifications %>% print(n = Inf)
+
+
+
+pseudobulks_by_patient_GBM_Verhaak_summary_filtered <-
+  pseudobulks_by_sample_GBM_Verhaak_summary_filtered %>% 
+  dplyr::group_by(Rx, Patient_ID, gene_name, gene_order, sig_name, Overall_survival_18m, bulk_verhaak_subtype) %>% 
+  dplyr::summarise(mean_exp_patient = mean(Exp), .groups = "drop") %>% 
+  dplyr::left_join(pseudobulk_verhaak_patient_classifications, by = c("Rx", "Patient_ID")) %>% 
+  dplyr::mutate(pseudobulk_verhaak_patient_group = case_when(pseudobulk_verhaak_patient == "Mesenchymal" ~ "Mesenchymal",
+                                                             .default = "Others") %>% factor(levels = c("Others", "Mesenchymal")))
+
+
+
+pseudobulk_patient_order_GBM_Verhaak_MES <-
+  pseudobulks_by_patient_GBM_Verhaak_summary_filtered %>% 
+  dplyr::filter(sig_name == "Mesenchymal") %>% 
+  dplyr::group_by(Rx, Patient_ID, Overall_survival_18m, pseudobulk_verhaak_patient, pseudobulk_verhaak_patient_group) %>% 
+  dplyr::summarise(mean_exp = mean(mean_exp_patient), .groups = "drop") %>% 
+  arrange(-mean_exp) %>% 
+  tibble::rowid_to_column(var = "patient_order")
+
+
+
+patient_classification_bulk_verhaak_panel <-
+  pseudobulk_patient_order_GBM_Verhaak_MES %>%
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  dplyr::left_join(project_metadata_GBM_verhaak_subtypes %>%
+                     dplyr::select(Patient_ID, Rx, bulk_verhaak_subtype = verhaak_subtype), by = c("Patient_ID", "Rx")) %>%
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = "Verhhak GBM state (bulk)")) +
+  geom_tile(aes(fill = bulk_verhaak_subtype), alpha = 0.8, show.legend = FALSE) +
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") +
+  scale_fill_manual(values = c(VERHAAK_SUBTYPE_CLASSICAL_C, VERHAAK_SUBTYPE_MESENCHYMAL_C, VERHAAK_SUBTYPE_NEURAL_C, VERHAAK_SUBTYPE_PRONEURAL_C), na.value = "white") +
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) +
+  labs(x = "", y = "", fill = "Verhaak GBM state") +
+  default_theme_xrot_90_border() +
+  theme(legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+
+patient_classification_pseudobulk_verhaak_panel <-
+  pseudobulk_patient_order_GBM_Verhaak_MES %>%
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  dplyr::left_join(project_metadata_GBM_verhaak_subtypes %>%
+                     dplyr::select(Patient_ID, Rx, bulk_verhaak_subtype = verhaak_subtype), by = c("Patient_ID", "Rx")) %>%
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = "Verhhak GBM state (pseudobulk)")) +
+  geom_tile(aes(fill = pseudobulk_verhaak_patient), alpha = 0.8) +
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") +
+  scale_fill_manual(values = c(VERHAAK_SUBTYPE_CLASSICAL_C, VERHAAK_SUBTYPE_MESENCHYMAL_C, VERHAAK_SUBTYPE_NEURAL_C, VERHAAK_SUBTYPE_PRONEURAL_C), na.value = "white") +
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) +
+  labs(x = "", y = "", fill = "Verhaak GBM state (pseudobulk)") +
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+
+
+overall_survival_18m_patient_panel <-
+  pseudobulk_patient_order_GBM_Verhaak_MES %>% 
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  dplyr::left_join(pseudobulk_verhaak_patient_classifications, by = c("Rx", "Patient_ID")) %>% 
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = "Overall survival")) + 
+  geom_tile(aes(fill = Overall_survival_18m), alpha = 0.8) + 
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") + 
+  scale_fill_manual(values = c(SURVIVAL_SS_C, SURVIVAL_LS_C), na.value = "white") + 
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) + 
+  labs(x = "", y = "", fill = "Overall survival") + 
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+  
+
+
+patient_RX_ICB_timepoint_panel <-
+  pseudobulk_patient_order_GBM_Verhaak_MES %>% 
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = "Timepoint")) + 
+  geom_tile(aes(fill = Rx), alpha = 0.8) + 
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), scales = "free", space = "free") + 
+  scale_fill_manual(values = c(RX_PRE_ICB_C, RX_POST_ICB_C)) + 
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete(expand = c(0,0)) + 
+  labs(x = "", y = "", fill = "") + 
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+
+
+MAX_LOG2_EXPRESSION_THRESHOLD <- 4
+
+pseudobulks_by_patient_GBM_Verhaak_heatmap <- 
+  pseudobulks_by_patient_GBM_Verhaak_summary_filtered %>% 
+  dplyr::left_join(pseudobulk_patient_order_GBM_Verhaak_MES %>% 
+                     dplyr::select(Rx, Patient_ID, patient_order), by = c("Rx", "Patient_ID")) %>% 
+  dplyr::mutate(mean_exp_patient_trim = case_when(mean_exp_patient < -MAX_LOG2_EXPRESSION_THRESHOLD ~ -MAX_LOG2_EXPRESSION_THRESHOLD,
+                                                  MAX_LOG2_EXPRESSION_THRESHOLD < mean_exp_patient ~ MAX_LOG2_EXPRESSION_THRESHOLD,
+                                                  .default = mean_exp_patient)) %>% 
+  dplyr::mutate(patient_id = case_when(Rx == "Pre-ICB" ~ paste0(" ", Patient_ID), # to display the same patient from different timepoints
+                                       .default = Patient_ID)) %>% 
+  ggplot(aes(x= reorder(patient_id, -patient_order), y = reorder(gene_name, -gene_order))) + 
+  geom_tile(aes(fill = mean_exp_patient_trim)) + 
+  facet_grid(cols = vars(pseudobulk_verhaak_patient_group), rows = vars(sig_name), scales = "free", space = "free") + 
+  scale_fill_gradient2(low = HEATMAP_LOW_VALUE_C, high = HEATMAP_HIGH_VALUE_C, mid = "white", midpoint = 0,
+                       guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) + 
+  labs(x = "", y = "Verhaak signatures genes", fill = "Exp, log2") + 
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+
+
+(patient_classification_bulk_verhaak_panel / plot_spacer() / patient_classification_pseudobulk_verhaak_panel / plot_spacer() / overall_survival_18m_patient_panel / plot_spacer() / patient_RX_ICB_timepoint_panel / plot_spacer() /  pseudobulks_by_patient_GBM_Verhaak_heatmap) + 
+  patchwork::plot_layout(heights = c(1,-1.4,1,-1.4,1,-1.4,1,-1.4,25), 
+                         guides = "collect") +
+  patchwork::plot_annotation(subtitle = ifelse(length(PATIENTS_TO_EXCLUDE) == 0, 
+                                               yes = "", no = paste0("Excluded patients: ", paste(PATIENTS_TO_EXCLUDE, collapse = ", "))), 
+                             theme = default_theme())
+
+```
+
+# Extended Data Figure 8a
+
+```{r annotate-samples-by-Verhaak-scores-pseudobulk}
+
+pseudobulks_by_sample_pre_TPM <- readRDS(file = "../data/pseudobulks_by_sample_pre_TPM.rds")
+pseudobulks_by_sample_cell_type_pre_TPM <- readRDS(file = "../data/pseudobulks_by_sample_cell_type_pre_TPM.rds")
+pseudobulks_by_sample_post_TPM <- readRDS(file = "../data/pseudobulks_by_sample_post_TPM.rds")
+pseudobulks_by_sample_cell_type_post_TPM <- readRDS(file = "../data/pseudobulks_by_sample_cell_type_post_TPM.rds")
+
+GBM_Verhaak_signatures_df <- readRDS(file = "../data/GBM_Verhaak_signatures_df.rds") 
+project_metadata_GBM_verhaak_subtypes <- readRDS(file = "../data/project_metadata_GBM_verhaak_subtypes.rds")
+
+
+pseudobulk_verhaak_sample_classifications <-
+  cbind(log2(pseudobulks_by_sample_pre_TPM + 1),
+        log2(pseudobulks_by_sample_post_TPM + 1)) %>% scalop::rowcenter() %>% 
+  scalop::sigScores(sigs = split(GBM_Verhaak_signatures_df$gene_name, GBM_Verhaak_signatures_df$sig_name), expr.center = FALSE) %>% 
+  dplyr::mutate(pseudobulk_verhaak_subtype = colnames(.)[max.col(.)]) %>% 
+  tibble::rownames_to_column(var = "Sample_ID")
+
+
+
+pseudobulk_verhaak_patient_classifications <- 
+  pseudobulk_verhaak_sample_classifications %>% 
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::select(Rx, Patient_ID, Sample_ID) %>% unique(), by = "Sample_ID") %>% 
+  dplyr::group_by(Rx, Patient_ID) %>% 
+  dplyr::summarise(pseudobulk_verhaak_patient = case_when(n_distinct(pseudobulk_verhaak_subtype) == 1 ~ unique(pseudobulk_verhaak_subtype),
+                                                          .default = NA), .groups = "drop")
+
+```
+
+```{r Ex.Fig.8a-relative-fraction-of-MESENCHYMAL-signal-by-cell-type}
+
+# Load TPM expression matrix to filter genes
+exp_mat_all_tpm_HLA <- readRDS("../data/exp_mat_all_tpm_HLA.rds")
+
+
+# ============================================================================
+# ANALYSIS: Fraction of MES signal by cell type 
+# ============================================================================
+
+# (1) Calculate total MES reads by sample and cell type
+total_mesanchymal_reads_by_sample_cell_type_summary <-
+  pseudobulks_by_sample_cell_type_pre_TPM[GBM_Verhaak_signatures_df %>% 
+                                             dplyr::filter(sig_name == "Mesenchymal") %>% 
+                                             dplyr::pull(gene_name), ] %>% 
+  colSums() %>% 
+  data.frame(Verhaak_MES_reads = .) %>% 
+  tibble::rownames_to_column(var = "sample_cell_type_id") %>%
+  tidyr::separate(col = "sample_cell_type_id", into = c("Sample_ID", "Cell_type"), sep = "[*]") %>%
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::filter(Rx == "Pre-ICB") %>% 
+                     dplyr::select(Sample_ID, Patient_ID, Rx) %>% 
+                     unique(), by = "Sample_ID") %>% 
+  dplyr::left_join(pseudobulk_verhaak_patient_classifications_pre %>% 
+                     dplyr::select(Patient_ID, pseudobulk_verhaak_patient), by = "Patient_ID") %>% 
+  dplyr::filter(!is.na(pseudobulk_verhaak_patient))
+
+
+# (2) Combine all malignant cell types into one "Malignant" group
+total_mesanchymal_reads_combined_malignant <-
+  total_mesanchymal_reads_by_sample_cell_type_summary %>%
+  dplyr::mutate(Cell_type_combined = case_when(
+    Cell_type %in% c("AC-like", "MES-like", "GPC-like", "NPC-like", "OPC-like", "Malignant (ND)") ~ "Malignant",
+    .default = Cell_type
+  )) %>%
+  dplyr::group_by(Sample_ID, Patient_ID, Rx, pseudobulk_verhaak_patient, Cell_type_combined) %>%
+  dplyr::summarise(Verhaak_MES_reads = sum(Verhaak_MES_reads), .groups = "drop")
+
+
+# (3) Calculate fraction of MES signal by cell type at sample level
+fraction_of_mes_signal_by_sample <-
+  total_mesanchymal_reads_combined_malignant %>%
+  dplyr::group_by(Sample_ID, Patient_ID, Rx, pseudobulk_verhaak_patient) %>%
+  dplyr::mutate(total_sample_MES_reads = sum(Verhaak_MES_reads),
+                fraction_MES_signal = Verhaak_MES_reads / total_sample_MES_reads)
+
+# (4) Average to patient level (Daniel's approach - averaging across multiple samples per patient)
+fraction_of_mes_signal_by_patient <-
+  fraction_of_mes_signal_by_sample %>%
+  dplyr::group_by(Patient_ID, Rx, pseudobulk_verhaak_patient, Cell_type_combined) %>%
+  dplyr::summarise(mean_fraction_MES_signal = mean(fraction_MES_signal), .groups = "drop")
+
+# (5) Filter to only Mesenchymal tumors
+fraction_of_mes_signal_by_patient_MES_only <-
+  fraction_of_mes_signal_by_patient %>%
+  dplyr::filter(pseudobulk_verhaak_patient == "Mesenchymal")
+
+# NEW: Complete the data to include all combinations with zeros for missing cell types
+# Get all unique patients
+all_patients <- fraction_of_mes_signal_by_patient_MES_only %>%
+  dplyr::select(Patient_ID, Rx, pseudobulk_verhaak_patient) %>%
+  unique()
+
+# Get all unique cell types
+all_cell_types <- fraction_of_mes_signal_by_patient_MES_only %>%
+  dplyr::select(Cell_type_combined) %>%
+  unique()
+
+# Create complete grid and fill missing with 0
+fraction_of_mes_signal_by_patient_MES_only <-
+  all_patients %>%
+  tidyr::crossing(all_cell_types) %>%
+  dplyr::left_join(fraction_of_mes_signal_by_patient_MES_only, 
+                   by = c("Patient_ID", "Rx", "pseudobulk_verhaak_patient", "Cell_type_combined")) %>%
+  dplyr::mutate(mean_fraction_MES_signal = 
+                  tidyr::replace_na(mean_fraction_MES_signal, 0))
+
+
+# (6) Order cell types by median fraction in MES tumors
+cell_type_order <-
+  fraction_of_mes_signal_by_patient_MES_only %>%
+  dplyr::group_by(Cell_type_combined) %>%
+  dplyr::summarise(median_fraction = median(mean_fraction_MES_signal), .groups = "drop") %>%
+  dplyr::arrange(-median_fraction) %>%
+  tibble::rowid_to_column(var = "order")
+
+# (7) Create the plot
+fraction_of_mes_signal_by_patient_MES_only %>%
+  dplyr::left_join(cell_type_order %>% 
+                     dplyr::select(Cell_type_combined, order), 
+                   by = "Cell_type_combined") %>%
+  ggplot(aes(x = reorder(Cell_type_combined, order), 
+             y = mean_fraction_MES_signal)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8, linewidth = 0.8, 
+               fill = "#E41A1C") +
+  geom_point(position = position_jitter(width = 0.2), 
+             size = 2, alpha = 0.5) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "", 
+       y = "Fraction of Total MES Signal",
+       title = "Contribution to Verhaak MES Signature by Cell Type (Pre-ICB)",
+       subtitle = "Mesenchymal tumors only (samples with >100 total cells, absent cell types shown as 0%)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(color = "black"),
+        plot.title = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(size = 10))
+
+```
+
+# Extended Data Figure 8b
+
+left panel: Compare the source of the HLA class I signal by cell type (as the fraction of the total HLA class I signal in a given sample) in MESENCHYMAL vs. non-MESENCHYMAL samples
+
+```{r Ex.Fig.8b-left-HLA-class-I-signal-by-cell-type-in-MES-vs-non-MES-samples}
+
+# Load TPM expression matrix to filter genes
+exp_mat_all_tpm_HLA <- readRDS("../data/exp_mat_all_tpm_HLA.rds")
+
+
+# ============================================================================
+# CREATE HLA CLASS I SIGNATURE
+# ============================================================================
+
+HLA_CLASS_I_GENES <- c("B2M", "HLA-A", "HLA-B", "HLA-C", "HLA-E", "HLA-F", "HLA-G", "HLA-H")
+
+# Create signature list
+HLA_signatures <- list("HLA_Class_I" = HLA_CLASS_I_GENES)
+
+# Filter to genes that exist in your dataset
+HLA_signatures_clean <- lapply(HLA_signatures, function(sig_genes) { 
+  sig_genes[sig_genes %in% rownames(exp_mat_all_tpm_HLA)]
+})
+
+# Print how many genes we have per signature
+print("Number of genes per signature:")
+print(sapply(HLA_signatures_clean, length))
+
+# Create the dataframe
+HLA_signatures_df <- 
+  map(names(HLA_signatures_clean), function(HLA_signature) {
+    HLA_signatures_clean[[HLA_signature]] %>% 
+      data.frame(gene_name = .) %>% 
+      dplyr::mutate(sig_name = HLA_signature)
+  }) %>% 
+  do.call(rbind, .) %>% 
+  tibble::rowid_to_column(var = "gene_order")
+
+
+# ============================================================================
+# ANALYSIS: Fraction of HLA Class I signal by cell type (Daniel's approach)
+# ============================================================================
+
+# (1) Calculate total HLA Class I reads by sample and cell type
+total_hla_class_i_reads_by_sample_cell_type_summary <-
+  pseudobulks_by_sample_cell_type_pre_TPM[HLA_signatures_df %>% 
+                                            dplyr::filter(sig_name == "HLA_Class_I") %>% 
+                                            dplyr::pull(gene_name), ] %>% 
+  colSums() %>% 
+  data.frame(HLA_Class_I_reads = .) %>% 
+  tibble::rownames_to_column(var = "sample_cell_type_id") %>%
+  tidyr::separate(col = "sample_cell_type_id", into = c("Sample_ID", "Cell_type"), sep = "[*]") %>%
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::filter(Rx == "Pre-ICB") %>% 
+                     dplyr::select(Sample_ID, Patient_ID, Rx) %>% 
+                     unique(), by = "Sample_ID") %>% 
+  dplyr::left_join(pseudobulk_verhaak_patient_classifications %>% 
+                     dplyr::filter(Rx == "Pre-ICB") %>% 
+                     dplyr::select(Patient_ID, pseudobulk_verhaak_patient) %>% unique(), by = "Patient_ID") %>% 
+  dplyr::filter(!is.na(pseudobulk_verhaak_patient))
+
+
+# (2) Combine all malignant cell types into one "Malignant" group
+total_hla_class_i_reads_combined_malignant <-
+  total_hla_class_i_reads_by_sample_cell_type_summary %>%
+  dplyr::mutate(Cell_type_combined = case_when(
+    Cell_type %in% c("AC-like", "MES-like", "GPC-like", "NPC-like", "OPC-like", "Malignant (ND)") ~ "Malignant",
+    .default = Cell_type
+  )) %>%
+  dplyr::group_by(Sample_ID, Patient_ID, Rx, pseudobulk_verhaak_patient, Cell_type_combined) %>%
+  dplyr::summarise(HLA_Class_I_reads = sum(HLA_Class_I_reads), .groups = "drop")
+
+# (3) Calculate fraction of HLA Class I signal by cell type at sample level (Daniel's approach)
+fraction_of_hla_class_i_signal_by_sample <-
+  total_hla_class_i_reads_combined_malignant %>%
+  dplyr::group_by(Sample_ID, Patient_ID, Rx, pseudobulk_verhaak_patient) %>%
+  dplyr::mutate(total_sample_HLA_Class_I_reads = sum(HLA_Class_I_reads),
+                fraction_HLA_Class_I_signal = HLA_Class_I_reads / total_sample_HLA_Class_I_reads)
+
+# (4) Average to patient level (Daniel's approach - averaging across multiple samples per patient)
+fraction_of_hla_class_i_signal_by_patient <-
+  fraction_of_hla_class_i_signal_by_sample %>%
+  dplyr::group_by(Patient_ID, Rx, pseudobulk_verhaak_patient, Cell_type_combined) %>%
+  dplyr::summarise(mean_fraction_HLA_Class_I_signal = mean(fraction_HLA_Class_I_signal), .groups = "drop")
+
+# (5) Create tumor subtype grouping
+fraction_of_hla_class_i_signal_by_patient <-
+  fraction_of_hla_class_i_signal_by_patient %>%
+  dplyr::mutate(Tumor_Subtype = case_when(
+    pseudobulk_verhaak_patient == "Mesenchymal" ~ "Mesenchymal",
+    .default = "Non-Mesenchymal"
+  ))
+
+
+# NEW: Complete the data to include all combinations with zeros for missing cell types
+# Get all unique patients per tumor subtype
+all_patients <- fraction_of_hla_class_i_signal_by_patient %>%
+  dplyr::select(Patient_ID, Rx, pseudobulk_verhaak_patient, Tumor_Subtype) %>%
+  unique()
+
+# Get all unique cell types
+all_cell_types <- fraction_of_hla_class_i_signal_by_patient %>%
+  dplyr::select(Cell_type_combined) %>%
+  unique()
+
+# Create complete grid and fill missing with 0
+fraction_of_hla_class_i_signal_by_patient <-
+  all_patients %>%
+  tidyr::crossing(all_cell_types) %>%
+  dplyr::left_join(fraction_of_hla_class_i_signal_by_patient, 
+                   by = c("Patient_ID", "Rx", "pseudobulk_verhaak_patient", 
+                          "Tumor_Subtype", "Cell_type_combined")) %>%
+  dplyr::mutate(mean_fraction_HLA_Class_I_signal = 
+                  tidyr::replace_na(mean_fraction_HLA_Class_I_signal, 0))
+
+
+# (6) Order cell types by median fraction in MES tumors
+cell_type_order <-
+  fraction_of_hla_class_i_signal_by_patient %>%
+  dplyr::filter(Tumor_Subtype == "Mesenchymal") %>%
+  dplyr::group_by(Cell_type_combined) %>%
+  dplyr::summarise(median_fraction = median(mean_fraction_HLA_Class_I_signal), .groups = "drop") %>%
+  dplyr::arrange(-median_fraction) %>%
+  tibble::rowid_to_column(var = "order")
+
+# (7) Create the plot
+fraction_of_hla_class_i_signal_by_patient %>%
+  dplyr::left_join(cell_type_order %>% 
+                     dplyr::select(Cell_type_combined, order), 
+                   by = "Cell_type_combined") %>%
+  ggplot(aes(x = reorder(Cell_type_combined, order), 
+             y = mean_fraction_HLA_Class_I_signal, 
+             fill = Tumor_Subtype)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8, linewidth = 0.8, 
+               position = position_dodge(width = 0.8)) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8), 
+             size = 2, alpha = 0.5) +
+  scale_fill_manual(values = c("Mesenchymal" = "#E41A1C", 
+                               "Non-Mesenchymal" = "#377EB8")) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "", 
+       y = "Fraction of Total HLA Class I Signal",
+       fill = "Tumor Subtype",
+       title = "Contribution to HLA Class I Signature by Cell Type (Pre-ICB)",
+       subtitle = "Samples with >100 total cells") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        legend.position = "top",
+        legend.title = element_text(size = 11),
+        legend.text = element_text(size = 10),
+        panel.grid.major.x = element_blank(),
+        plot.title = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(size = 10))
+
+```
+
+# Extended Data Figure 8c
+
+Compare HLA class II scores, based on bulk expression scores, per malignant cell-state
+
+```{r Ex.Fig.8c-compare-bulk-expression-HLA-class-II-scores-by-malignant-cell-state}
+
+exp_mat_all_tpm_HLA <- readRDS("backup_temp_data/Single cell portal/exp_mat_all_tpm_HLA.rds")
+
+
+HLA_CLASS_II_GENES <- c("HLA-DMA", "HLA-DMB", "HLA-DOA", "HLA-DOB", "HLA-DPA1", "HLA-DPB1", "HLA-DQA1", "HLA-DQA2", "HLA-DQB1", "HLA-DQB2", "HLA-DRA", "HLA-DRB1", "HLA-DRB3", "HLA-DRB4", "HLA-DRB5")
+
+genes_present <- HLA_CLASS_II_GENES[HLA_CLASS_II_GENES %in% rownames(exp_mat_all_tpm_HLA)]
+
+MIN_NUMBER_OF_CELL_PER_CELL_TYPE <- 5
+
+# FILTER TO PRE-ICB SAMPLES IMMEDIATELY
+sample_cell_type_counts_summary <- 
+  metadata_ICB %>%
+  dplyr::filter(Rx == "Pre-ICB") %>%  # <- FILTER UPFRONT HERE
+  group_by(Rx, Patient_ID, Sample_ID, malignant_group, Cell_type) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  dplyr::filter(count >= MIN_NUMBER_OF_CELL_PER_CELL_TYPE)
+
+# Calculate pseudobulk for ALL malignant cell types (including "Malignant (ND)")
+# Now only using Pre-ICB samples
+bulk_expression_by_cell_type_patient_malignant <- 
+  sample_cell_type_counts_summary %>%
+  dplyr::filter(malignant_group == "Malignant") %>%
+  droplevels() %>%
+  pull(Cell_type) %>% 
+  levels() %>%
+  map(function(cur_cell_type) {
+    
+    cat("Processing:", cur_cell_type, "\n")
+    
+    cur_cell_type_counts_summary <- sample_cell_type_counts_summary %>%
+      dplyr::filter(Cell_type == cur_cell_type) %>% 
+      droplevels()
+    
+    if (nrow(cur_cell_type_counts_summary) == 0) {
+      return(NULL)
+    }
+    
+    bulk_expression_cur_cell_type <- 
+      cur_cell_type_counts_summary$Sample_ID %>% unique() %>%
+      map(function(cur_cell_type_sample) {
+        
+        cur_cell_type_sample_cell_id <- metadata_ICB %>%
+          dplyr::filter(Cell_type == cur_cell_type, Sample_ID == cur_cell_type_sample) %>%
+          pull(Cell_ID)
+        
+        exp_subset <- exp_mat_all_tpm_HLA[, cur_cell_type_sample_cell_id, drop = FALSE]
+        log2(Matrix::rowMeans(exp_subset) + 1)
+        
+      }) %>% do.call(cbind, .)
+    
+    colnames(bulk_expression_cur_cell_type) <- cur_cell_type_counts_summary$Sample_ID %>% unique()
+    
+    bulk_expression_cur_cell_type %>%
+      reshape2::melt(varnames = c("gene_name", "Sample_ID"), value.name = "Exp") %>%
+      left_join(sample_cell_type_counts_summary %>%
+                  dplyr::filter(Cell_type == cur_cell_type) %>% 
+                  droplevels() %>%
+                  dplyr::select(Rx, Patient_ID, Sample_ID) %>% 
+                  unique(), 
+                by = "Sample_ID") %>%
+      group_by(Rx, Patient_ID, gene_name) %>%
+      summarise(mean_exp = mean(Exp), .groups = "drop") %>%
+      mutate(Cell_type = cur_cell_type)
+    
+  }) %>% 
+  keep(~ !is.null(.)) %>%
+  do.call(rbind, .) %>%
+  mutate_at(c("gene_name"), as.character)
+
+# EXCLUDE "Malignant (ND)" BEFORE centering - USING scalop::rowcenter()
+# Now centering only across Pre-ICB samples
+bulk_expression_centered_matrix <- 
+  bulk_expression_by_cell_type_patient_malignant %>%
+  dplyr::filter(Cell_type != "Malignant (ND)") %>%  # FILTER BEFORE CENTERING
+  mutate(rx_patient_cell_type_id = paste0(Rx, "*", Patient_ID, "*", Cell_type)) %>%
+  pivot_wider(id_cols = c("gene_name"), 
+              names_from = "rx_patient_cell_type_id", 
+              values_from = "mean_exp") %>%
+  column_to_rownames(var = "gene_name") %>%
+  as.matrix() %>%
+  scalop::rowcenter()  # CENTERING ONLY PRE-ICB DATA
+
+# Calculate scores
+sig_scores <- bulk_expression_centered_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("gene_name") %>%
+  dplyr::filter(gene_name %in% genes_present) %>%
+  pivot_longer(-gene_name, names_to = "id", values_to = "centered_exp") %>%
+  group_by(id) %>%
+  summarise(HLA_score = mean(centered_exp, na.rm = TRUE), .groups = "drop") %>%
+  separate(id, into = c("Rx", "Patient_ID", "Cell_type"), sep = "\\*")
+# NO FILTER HERE - already only Pre-ICB data
+
+# Order cell types by median HLA score (highest to lowest)
+cell_type_order <- sig_scores %>%
+  group_by(Cell_type) %>%
+  summarise(median_score = median(HLA_score, na.rm = TRUE)) %>%
+  arrange(desc(median_score)) %>%
+  pull(Cell_type)
+
+sig_scores <- sig_scores %>%
+  mutate(Cell_type = factor(Cell_type, levels = cell_type_order))
+
+# --- 6. STATISTICS ---
+my_comparisons <- list(
+  c("MES-like", "AC-like"),
+  c("MES-like", "GPC-like"),
+  c("MES-like", "NPC-like"),
+  c("MES-like", "OPC-like")
+)
+
+unpaired_results <- map_dfr(my_comparisons, function(comp) {
+  group1 <- comp[1]
+  group2 <- comp[2]
+  
+  data1 <- sig_scores %>% filter(Cell_type == group1) %>% pull(HLA_score)
+  data2 <- sig_scores %>% filter(Cell_type == group2) %>% pull(HLA_score)
+  
+  test <- t.test(data1, data2, paired = FALSE)
+  
+  data.frame(
+    comparison = paste(group1, "vs", group2),
+    group1 = group1,
+    group2 = group2,
+    n1 = length(data1),
+    n2 = length(data2),
+    p_value = test$p.value
+  )
+})
+
+paired_results <- map_dfr(my_comparisons, function(comp) {
+  group1 <- comp[1]
+  group2 <- comp[2]
+  
+  patients_with_both <- sig_scores %>%
+    filter(Cell_type %in% c(group1, group2)) %>%
+    group_by(Patient_ID) %>%
+    summarise(n_types = n_distinct(Cell_type), .groups = "drop") %>%
+    filter(n_types == 2) %>%
+    pull(Patient_ID)
+  
+  if (length(patients_with_both) < 3) {
+    return(data.frame(
+      comparison = paste(group1, "vs", group2),
+      group1 = group1,
+      group2 = group2,
+      n_paired = length(patients_with_both),
+      p_value = NA
+    ))
+  }
+  
+  paired_data <- sig_scores %>%
+    filter(Patient_ID %in% patients_with_both, Cell_type %in% c(group1, group2)) %>%
+    select(Patient_ID, Cell_type, HLA_score) %>%
+    pivot_wider(names_from = Cell_type, values_from = HLA_score)
+  
+  data1 <- paired_data %>% pull(!!sym(group1))
+  data2 <- paired_data %>% pull(!!sym(group2))
+  
+  test <- t.test(data1, data2, paired = TRUE)
+  
+  data.frame(
+    comparison = paste(group1, "vs", group2),
+    group1 = group1,
+    group2 = group2,
+    n_paired = length(patients_with_both),
+    p_value = test$p.value
+  )
+})
+
+# Print paired results to terminal
+cat("\n=== PAIRED T-TEST RESULTS ===\n")
+print(paired_results)
+cat("\n")
+
+# --- 7. PLOT ---
+malignant_colors <- c(
+  "NPC-like" = "#003399",
+  "OPC-like" = "#6699CC",
+  "AC-like" = "#FFB366",
+  "GPC-like" = "#FF8899",
+  "MES-like" = "#CC0000"
+)
+
+p_unpaired <- ggboxplot(
+  sig_scores, 
+  x = "Cell_type", 
+  y = "HLA_score",
+  fill = "Cell_type", 
+  palette = malignant_colors,
+  add = "jitter",
+  add.params = list(size = 2, alpha = 0.7),
+  outlier.shape = NA
+) +
+  stat_compare_means(
+    comparisons = my_comparisons, 
+    method = "t.test",
+    paired = FALSE,
+    label = "p.format",
+    size = 3.5,
+    tip.length = 0.01
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black", size = 10),
+    axis.text.y = element_text(color = "black", size = 10),
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.line = element_line(color = "black", size = 0.5),
+    axis.ticks = element_line(color = "black", size = 0.5),
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    plot.background = element_blank()
+  ) +
+  labs(
+    x = "",
+    y = "HLA Class II Score"
+  )
+
+print(p_unpaired)
+
+```
+
+# Extended Data Figure 8d
+
+left panel: Compare the source of the HLA class II signal by cell type (as the fraction of the total HLA class II signal in a given sample) in MESENCHYMAL vs. non-MESENCHYMAL samples
+
+```{r Ex.Fig.8d-left-HLA-class-II-signal-by-cell-type-in-MES-vs-non-MES-samples}
+
+# Load TPM expression matrix to filter genes
+exp_mat_all_tpm_HLA <- readRDS("../data/exp_mat_all_tpm_HLA.rds")
+
+
+# ============================================================================
+# CREATE HLA CLASS II SIGNATURE
+# ============================================================================
+
+HLA_CLASS_II_GENES <- c("B2M", "CD74", "HLA-DMA", "HLA-DMB", "HLA-DOA", "HLA-DOB", 
+                        "HLA-DPA1", "HLA-DPB1", "HLA-DQA1", "HLA-DQA2", "HLA-DQB1", 
+                        "HLA-DQB2", "HLA-DRA", "HLA-DRB1", "HLA-DRB3", "HLA-DRB4", "HLA-DRB5")
+
+# Create signature list
+HLA_signatures <- list("HLA_Class_II" = HLA_CLASS_II_GENES)
+
+# Filter to genes that exist in your dataset
+HLA_signatures_clean <- lapply(HLA_signatures, function(sig_genes) { 
+  sig_genes[sig_genes %in% rownames(exp_mat_all_tpm_HLA)]
+})
+
+# Print how many genes we have per signature
+print("Number of genes per signature:")
+print(sapply(HLA_signatures_clean, length))
+
+# Create the dataframe
+HLA_signatures_df <- 
+  map(names(HLA_signatures_clean), function(HLA_signature) {
+    HLA_signatures_clean[[HLA_signature]] %>% 
+      data.frame(gene_name = .) %>% 
+      dplyr::mutate(sig_name = HLA_signature)
+  }) %>% 
+  do.call(rbind, .) %>% 
+  tibble::rowid_to_column(var = "gene_order")
+
+
+# ============================================================================
+# ANALYSIS: Fraction of HLA Class II signal by cell type (Daniel's approach)
+# ============================================================================
+
+# (1) Calculate total HLA Class II reads by sample and cell type
+total_hla_class_ii_reads_by_sample_cell_type_summary <-
+  pseudobulks_by_sample_cell_type_pre_TPM[HLA_signatures_df %>% 
+                                            dplyr::filter(sig_name == "HLA_Class_II") %>% 
+                                            dplyr::pull(gene_name), ] %>% 
+  colSums() %>% 
+  data.frame(HLA_Class_II_reads = .) %>% 
+  tibble::rownames_to_column(var = "sample_cell_type_id") %>%
+  tidyr::separate(col = "sample_cell_type_id", into = c("Sample_ID", "Cell_type"), sep = "[*]") %>%
+  dplyr::left_join(metadata_ICB %>% 
+                     dplyr::filter(Rx == "Pre-ICB") %>% 
+                     dplyr::select(Sample_ID, Patient_ID, Rx) %>% 
+                     unique(), by = "Sample_ID") %>% 
+  dplyr::left_join(pseudobulk_verhaak_patient_classifications %>% 
+                     dplyr::filter(Rx == "Pre-ICB") %>% 
+                     dplyr::select(Patient_ID, pseudobulk_verhaak_patient) %>% unique(), by = "Patient_ID") %>% 
+  dplyr::filter(!is.na(pseudobulk_verhaak_patient))
+
+
+# (2) Combine all malignant cell types into one "Malignant" group
+total_hla_class_ii_reads_combined_malignant <-
+  total_hla_class_ii_reads_by_sample_cell_type_summary %>%
+  dplyr::mutate(Cell_type_combined = case_when(
+    Cell_type %in% c("AC-like", "MES-like", "GPC-like", "NPC-like", "OPC-like", "Malignant (ND)") ~ "Malignant",
+    .default = Cell_type
+  )) %>%
+  dplyr::group_by(Sample_ID, Patient_ID, Rx, pseudobulk_verhaak_patient, Cell_type_combined) %>%
+  dplyr::summarise(HLA_Class_II_reads = sum(HLA_Class_II_reads), .groups = "drop")
+
+# (3) Calculate fraction of HLA Class I signal by cell type at sample level (Daniel's approach)
+fraction_of_hla_class_ii_signal_by_sample <-
+  total_hla_class_ii_reads_combined_malignant %>%
+  dplyr::group_by(Sample_ID, Patient_ID, Rx, pseudobulk_verhaak_patient) %>%
+  dplyr::mutate(total_sample_HLA_Class_II_reads = sum(HLA_Class_II_reads),
+                fraction_HLA_Class_II_signal = HLA_Class_II_reads / total_sample_HLA_Class_II_reads)
+
+# (4) Average to patient level (Daniel's approach - averaging across multiple samples per patient)
+fraction_of_hla_class_ii_signal_by_patient <-
+  fraction_of_hla_class_ii_signal_by_sample %>%
+  dplyr::group_by(Patient_ID, Rx, pseudobulk_verhaak_patient, Cell_type_combined) %>%
+  dplyr::summarise(mean_fraction_HLA_Class_II_signal = mean(fraction_HLA_Class_II_signal), .groups = "drop")
+
+# (5) Create tumor subtype grouping
+fraction_of_hla_class_ii_signal_by_patient <-
+  fraction_of_hla_class_ii_signal_by_patient %>%
+  dplyr::mutate(Tumor_Subtype = case_when(
+    pseudobulk_verhaak_patient == "Mesenchymal" ~ "Mesenchymal",
+    .default = "Non-Mesenchymal"
+  ))
+
+
+# NEW: Complete the data to include all combinations with zeros for missing cell types
+# Get all unique patients per tumor subtype
+all_patients <- fraction_of_hla_class_ii_signal_by_patient %>%
+  dplyr::select(Patient_ID, Rx, pseudobulk_verhaak_patient, Tumor_Subtype) %>%
+  unique()
+
+# Get all unique cell types
+all_cell_types <- fraction_of_hla_class_ii_signal_by_patient %>%
+  dplyr::select(Cell_type_combined) %>%
+  unique()
+
+# Create complete grid and fill missing with 0
+fraction_of_hla_class_ii_signal_by_patient <-
+  all_patients %>%
+  tidyr::crossing(all_cell_types) %>%
+  dplyr::left_join(fraction_of_hla_class_ii_signal_by_patient, 
+                   by = c("Patient_ID", "Rx", "pseudobulk_verhaak_patient", 
+                          "Tumor_Subtype", "Cell_type_combined")) %>%
+  dplyr::mutate(mean_fraction_HLA_Class_II_signal = 
+                  tidyr::replace_na(mean_fraction_HLA_Class_II_signal, 0))
+
+
+# (6) Order cell types by median fraction in MES tumors
+cell_type_order <-
+  fraction_of_hla_class_ii_signal_by_patient %>%
+  dplyr::filter(Tumor_Subtype == "Mesenchymal") %>%
+  dplyr::group_by(Cell_type_combined) %>%
+  dplyr::summarise(median_fraction = median(mean_fraction_HLA_Class_II_signal), .groups = "drop") %>%
+  dplyr::arrange(-median_fraction) %>%
+  tibble::rowid_to_column(var = "order")
+
+# (7) Create the plot
+fraction_of_hla_class_ii_signal_by_patient %>%
+  dplyr::left_join(cell_type_order %>% 
+                     dplyr::select(Cell_type_combined, order), 
+                   by = "Cell_type_combined") %>%
+  ggplot(aes(x = reorder(Cell_type_combined, order), 
+             y = mean_fraction_HLA_Class_II_signal, 
+             fill = Tumor_Subtype)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8, linewidth = 0.8, 
+               position = position_dodge(width = 0.8)) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8), 
+             size = 2, alpha = 0.5) +
+  scale_fill_manual(values = c("Mesenchymal" = "#E41A1C", 
+                               "Non-Mesenchymal" = "#377EB8")) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "", 
+       y = "Fraction of Total HLA Class II Signal",
+       fill = "Tumor Subtype",
+       title = "Contribution to HLA Class II Signature by Cell Type (Pre-ICB)",
+       subtitle = "Samples with >100 total cells") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        legend.position = "top",
+        legend.title = element_text(size = 11),
+        legend.text = element_text(size = 10),
+        panel.grid.major.x = element_blank(),
+        plot.title = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(size = 10))
+
+```
+
+# Extended Data Figure 8e
+
+Relative expression of the HLA genes (class I and II) by malignant cell-state level. Expression was calculated based on bulk expression (averaging over malignant-state cells)
+
+```{r Ex.Fig.8e-relative-expression-of-HLA-genes-by-malignant-state}
+
+library(ComplexHeatmap)
+library(circlize)
+library(scalop) 
+
+
+exp_mat_all_tpm_HLA <- readRDS("../data/exp_mat_all_tpm_HLA.rds")
+
+
+# Keep B2M in BOTH gene lists for calculation
+HLA_CLASS_I_GENES <- c("B2M", "HLA-A", "HLA-B", "HLA-C", "HLA-E", "HLA-F", "HLA-G", "HLA-H")
+HLA_CLASS_II_GENES <- c("HLA-DMA", "HLA-DMB", "HLA-DOA", "HLA-DOB", "HLA-DPA1", "HLA-DPB1", "HLA-DQA1", "HLA-DQA2", "HLA-DQB1", "HLA-DQB2", "HLA-DRA", "HLA-DRB1", "HLA-DRB3", "HLA-DRB4", "HLA-DRB5")
+
+genes_class_i_present <- HLA_CLASS_I_GENES[HLA_CLASS_I_GENES %in% rownames(exp_mat_all_tpm_HLA)]
+genes_class_ii_present <- HLA_CLASS_II_GENES[HLA_CLASS_II_GENES %in% rownames(exp_mat_all_tpm_HLA)]
+
+MIN_CELLS_PER_SAMPLE_CELL_TYPE <- 5
+
+# Filter to Pre-ICB and malignant cell types only (ALREADY excludes Malignant ND)
+metadata_malignant_only <- 
+  metadata_ICB %>%
+  dplyr::filter(Rx == "Pre-ICB",
+                Cell_type %in% c("AC-like", "MES-like", "GPC-like", "NPC-like", "OPC-like"))
+
+# Step 1: Pseudobulk per SAMPLE per cell type (only if >5 cells)
+bulk_expression_by_sample_cell_type <- 
+  expand.grid(
+    Sample_ID = unique(metadata_malignant_only$Sample_ID),
+    Cell_type = c("AC-like", "MES-like", "GPC-like", "NPC-like", "OPC-like"),
+    stringsAsFactors = FALSE
+  ) %>%
+  pmap_dfr(function(Sample_ID, Cell_type) {
+    
+    # Get all cell IDs for this sample and cell type
+    cell_ids <- metadata_malignant_only %>%
+      dplyr::filter(Sample_ID == !!Sample_ID, Cell_type == !!Cell_type) %>%
+      pull(Cell_ID)
+    
+    # Filter: only include if >5 cells
+    if (length(cell_ids) <= MIN_CELLS_PER_SAMPLE_CELL_TYPE) {
+      return(NULL)
+    }
+    
+    # Get patient ID for this sample
+    patient_id <- metadata_malignant_only %>%
+      dplyr::filter(Sample_ID == !!Sample_ID) %>%
+      pull(Patient_ID) %>%
+      unique()
+    
+    cat("Processing:", Sample_ID, "-", Cell_type, "(", length(cell_ids), "cells )\n")
+    
+    # Calculate mean expression across all cells of this sample-cell type
+    exp_subset <- exp_mat_all_tpm_HLA[, cell_ids, drop = FALSE]
+    mean_exp <- log2(Matrix::rowMeans(exp_subset) + 1)
+    
+    data.frame(
+      gene_name = names(mean_exp),
+      mean_exp = mean_exp,
+      Sample_ID = Sample_ID,
+      Patient_ID = patient_id,
+      Cell_type = Cell_type,
+      n_cells = length(cell_ids)
+    )
+  })
+
+cat("\n=== Sample-cell type combinations after filtering (>5 cells) ===\n")
+sample_cell_type_summary <- bulk_expression_by_sample_cell_type %>%
+  dplyr::select(Sample_ID, Patient_ID, Cell_type, n_cells) %>%
+  unique() %>%
+  arrange(Cell_type, Patient_ID, Sample_ID)
+print(sample_cell_type_summary)
+
+# Step 2: Average sample-level pseudobulks to patient level
+bulk_expression_by_patient_cell_type <- 
+  bulk_expression_by_sample_cell_type %>%
+  group_by(gene_name, Patient_ID, Cell_type) %>%
+  summarise(
+    mean_exp = mean(mean_exp, na.rm = TRUE),
+    n_samples = n(),
+    total_cells = sum(n_cells),
+    .groups = "drop"
+  )
+
+cat("\n=== Patient-cell type combinations (after averaging samples) ===\n")
+patient_cell_type_summary <- bulk_expression_by_patient_cell_type %>%
+  dplyr::select(Patient_ID, Cell_type, n_samples, total_cells) %>%
+  unique() %>%
+  arrange(Cell_type, Patient_ID)
+print(patient_cell_type_summary)
+
+# Step 3: Average across patients for each cell type
+bulk_expression_by_cell_type <- 
+  bulk_expression_by_patient_cell_type %>%
+  group_by(gene_name, Cell_type) %>%
+  summarise(
+    mean_exp = mean(mean_exp, na.rm = TRUE),
+    n_patients = n_distinct(Patient_ID),
+    total_cells = sum(total_cells),
+    .groups = "drop"
+  )
+
+# Print summary
+cat("\n=== Summary per cell type ===\n")
+bulk_expression_by_cell_type %>%
+  dplyr::select(Cell_type, n_patients, total_cells) %>%
+  unique() %>%
+  arrange(desc(n_patients)) %>%
+  print()
+
+# Create matrix for row-centering
+bulk_expression_matrix <- 
+  bulk_expression_by_cell_type %>%
+  dplyr::select(gene_name, Cell_type, mean_exp) %>%
+  pivot_wider(id_cols = gene_name, 
+              names_from = Cell_type, 
+              values_from = mean_exp) %>%
+  column_to_rownames(var = "gene_name") %>%
+  as.matrix()
+
+# Row-center across all malignant cell types - USING scalop::rowcenter()
+bulk_expression_centered_matrix <- scalop::rowcenter(bulk_expression_matrix)  # CHANGED THIS LINE
+
+# Filter to HLA Class I and Class II genes
+hla_class_i_matrix <- bulk_expression_centered_matrix[genes_class_i_present, , drop = FALSE]
+hla_class_ii_matrix <- bulk_expression_centered_matrix[genes_class_ii_present, , drop = FALSE]
+
+# Calculate average expression for Class I genes
+class_i_average <- colMeans(hla_class_i_matrix, na.rm = TRUE)
+class_i_average_row <- matrix(class_i_average, nrow = 1, dimnames = list("Average", names(class_i_average)))
+
+# Calculate average expression for Class II genes
+class_ii_average <- colMeans(hla_class_ii_matrix, na.rm = TRUE)
+class_ii_average_row <- matrix(class_ii_average, nrow = 1, dimnames = list("Average", names(class_ii_average)))
+
+# MODIFIED: Reorder HLA Class I genes to put B2M between HLA-G and Average
+hla_class_i_genes_reordered <- setdiff(rownames(hla_class_i_matrix), "B2M")
+b2m_row <- hla_class_i_matrix["B2M", , drop = FALSE]
+hla_class_i_matrix_with_avg <- rbind(
+  hla_class_i_matrix[hla_class_i_genes_reordered, , drop = FALSE],
+  b2m_row,
+  class_i_average_row
+)
+
+# Add average row to Class II matrix
+hla_class_ii_matrix_with_avg <- rbind(hla_class_ii_matrix, class_ii_average_row)
+
+# Remove duplicate B2M from Class II (only for display)
+b2m_row_in_class_ii <- which(rownames(hla_class_ii_matrix_with_avg) == "B2M")
+if (length(b2m_row_in_class_ii) > 0) {
+  hla_class_ii_matrix_with_avg <- hla_class_ii_matrix_with_avg[-b2m_row_in_class_ii, , drop = FALSE]
+}
+
+# Combine Class I and Class II
+hla_combined_matrix <- rbind(hla_class_i_matrix_with_avg, hla_class_ii_matrix_with_avg)
+
+# MODIFIED: Define new cell type order
+cell_type_order <- c("MES-like", "AC-like", "OPC-like", "NPC-like", "GPC-like")
+
+# Reorder columns
+hla_combined_matrix <- hla_combined_matrix[, cell_type_order, drop = FALSE]
+
+# Define colors
+malignant_colors <- c(
+  "NPC-like" = "#003399",
+  "OPC-like" = "#6699CC",
+  "AC-like" = "#FFB366",
+  "GPC-like" = "#FF8899",
+  "MES-like" = "#CC0000"
+)
+
+# Create column annotation
+col_ha <- HeatmapAnnotation(
+  Cell_type = colnames(hla_combined_matrix),
+  col = list(Cell_type = malignant_colors),
+  annotation_name_side = "left",
+  show_legend = FALSE,
+  show_annotation_name = FALSE,
+  border = TRUE
+)
+
+# Create row annotation for HLA class
+row_annotation_df <- data.frame(
+  gene_name = rownames(hla_combined_matrix)
+) %>%
+  mutate(HLA_class = case_when(
+    gene_name == "Average" & row_number() <= (nrow(hla_class_i_matrix_with_avg)) ~ "HLA Class I",
+    gene_name == "Average" ~ "HLA Class II",
+    gene_name %in% genes_class_i_present ~ "HLA Class I",
+    gene_name %in% genes_class_ii_present ~ "HLA Class II"
+  ))
+
+# Create color function for heatmap
+col_fun <- colorRamp2(
+  c(-2, -1, 0, 1, 2),
+  c("#2166AC", "#92C5DE", "#F7F7F7", "#D6604D", "#B2182B")
+)
+
+# Create heatmap
+Heatmap(
+  hla_combined_matrix,
+  name = "Relative\nExpression",
+  col = col_fun,
+  
+  # Column settings
+  cluster_columns = FALSE,
+  show_column_names = TRUE,
+  column_names_gp = gpar(fontsize = 10, fontface = "italic"),
+  column_names_rot = 45,
+  column_names_side = "bottom",
+  top_annotation = col_ha,
+  column_title = NULL,
+  border = TRUE,
+  
+  # Row settings
+  cluster_rows = FALSE,
+  show_row_names = TRUE,
+  row_names_gp = gpar(fontsize = 9, fontface = "italic"),
+  row_names_side = "right",
+  row_split = row_annotation_df$HLA_class,
+  row_title_gp = gpar(fontsize = 11, fontface = "bold"),
+  row_title_rot = 0,
+  row_gap = unit(2, "mm"),
+  
+  # Cell aesthetics
+  rect_gp = gpar(col = "white", lwd = 1),
+  
+  # Heatmap body
+  heatmap_legend_param = list(
+    title = "Relative\nExpression",
+    title_gp = gpar(fontsize = 10, fontface = "bold"),
+    at = c(-2, -1, 0, 1, 2),
+    labels = c("-2", "-1", "0", "1", "2"),
+    labels_gp = gpar(fontsize = 9),
+    legend_height = unit(3, "cm"),
+    legend_width = unit(0.4, "cm"),
+    border = "black", 
+    width = unit(6, "cm"),    # Decrease this for thinner (was 8)
+    height = unit(16, "cm")   # Increase this for taller (was 12)
+    
+  ),
+  
+  # Size
+  width = unit(8, "cm"),
+  height = unit(18, "cm")
+)
+
+```

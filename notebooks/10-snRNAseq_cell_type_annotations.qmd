@@ -1,0 +1,1147 @@
+---
+title: "Extended_figure_7_snRNAseq_data"
+format: html
+editor: visual
+---
+
+Load libraries, data and plotting themes
+
+```{r setup, include=FALSE}
+
+# load libraries
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(ggh4x)
+library(scales)
+library(dendextend)
+library(patchwork)
+library(stringr)
+library(survival)
+library(coxphf)
+
+
+# load data
+metadata_ICB <- readRDS(file = "../data/metadata_ICB.rds")
+metadata_ICB %>% dim() # 666948  15
+
+project_metadata <- readRDS(file = "../data/Single cell portal/project_metadata_ICB.rds")
+
+pseudobulk_pre_path <- "../data/pseudobulks_by_sample_cell_type_pre_TPM.rds"
+pseudobulks_pre_tpm <- readRDS(pseudobulk_pre_path)
+
+
+# generate ggplot themes
+base_theme <- function() {
+  
+  theme_classic(base_size = 25) + 
+    theme(plot.title = element_text(face = "bold"), plot.title.position = "plot", plot.subtitle = element_text(lineheight = 1.1),
+          axis.line = element_blank()
+    )
+  
+}
+
+umap_theme <- function() {
+  
+  base_theme() +
+    theme(axis.ticks = element_blank(), axis.text = element_blank(),
+          axis.title.x = element_text(hjust = 0.1), axis.title.y = element_text(hjust = 0.1), axis.title = element_text(size = 14)
+    )
+  
+}
+
+default_theme <- function() {
+  
+  theme_classic(base_size = 25) + 
+    theme(plot.title = element_text(face = "bold"), plot.title.position = "plot", plot.subtitle = element_text(lineheight = 1.1),
+          strip.text = element_text(size = 20),
+          panel.grid.minor.y = element_line(linewidth = 0.25, linetype = 1),
+          panel.grid.major.y = element_line(linewidth = 0.5, linetype = 1),
+    )
+  
+}
+
+default_theme_border <- function() {
+  
+  default_theme() + 
+    theme(panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank())
+  
+}
+
+default_theme_xrot_90 <- function() {
+  
+  default_theme() +
+    theme(axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1))
+}
+
+default_theme_xrot_90_border <- function() {
+  
+  default_theme() +
+    theme(axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank())
+}
+
+
+# load color palettes
+HEATMAP_LOW_VALUE_C <- "#3C5488"
+HEATMAP_HIGH_VALUE_C <- "#E64B35"
+
+SURVIVAL_LS_C <- "#D494B9" 
+SURVIVAL_SS_C <- "#32B18F" 
+
+SURVIVAL_LS_MALIGNANT_C <- "#B22222" 
+SURVIVAL_SS_MALIGNANT_C <- "#F08080"
+
+SURVIVAL_LS_NON_MALIGNANT_C <- "#2C6BA0" 
+SURVIVAL_SS_NON_MALIGNANT_C <- "#9CC9FF" 
+
+RX_UNTREATED_C <- "#4A6274"
+RX_TREATED_C <- "#E294AF" 
+
+RX_PRE_ICB_C <- "#4089B2"
+RX_POST_ICB_C <- "#DC8848"
+
+
+VERHAAK_SUBTYPE_MESENCHYMAL_C <- "#D62727"
+VERHAAK_SUBTYPE_CLASSICAL_C <- "#F39354"
+VERHAAK_SUBTYPE_NEURAL_C <- "#96A6AF"
+VERHAAK_SUBTYPE_PRONEURAL_C <- "#1F73AF"
+
+
+GBM_STATE_AC_C <- "#FFCC80"
+GBM_STATE_GPC_C <- "#B39DDB"
+GBM_STATE_MES_C <- "#EF9A9A"
+GBM_STATE_NPC_C <- "#B0BEC5"
+GBM_STATE_OPC_C <- "#90CAF9"
+GBM_STATE_ND_C <- "white"
+
+CELL_TYPE_MALIGNANT_C <- "#C2185B"
+CELL_TYPE_OLIGODENDROCYTE_C <- "#FF6961"
+CELL_TYPE_MYELOID_C <- "#FFB480"
+CELL_TYPE_ASTROCYTES_C <- "#F8F38D"
+CELL_TYPE_NEURONS_C <- "#D4E157"
+CELL_TYPE_ENDOTHELIAL_C <- "#81C784"
+CELL_TYPE_PERICYTES_C <- "#42d6a4"
+CELL_TYPE_T_CELL_C <- "#59adf6"
+CELL_TYPE_NK_CELL_C <- "#9d94ff"
+
+
+# create utilities functions
+`%!in%` <- Negate(`%in%`)
+
+```
+
+# Figure 2f
+
+Generate a UMAP representation of all high-quality cells
+
+```{r Fig.2f-single-nucleus-dataset-umap}
+
+# set UMAP legend arrows dimensions
+UMAP_AXES_DATA <- list(x = -20, y = -20, x_len = 4, y_len = 4)
+
+
+metadata_ICB %>% 
+  ggplot2::ggplot(aes(x=UMAP_all.V1, y=UMAP_all.V2)) + 
+  geom_point(aes(color=Cell_type_grouped), alpha = 0.5, size = 1) + 
+  annotate("segment", 
+           x = UMAP_AXES_DATA$x, xend = UMAP_AXES_DATA$x + c(UMAP_AXES_DATA$x_len, 0), 
+           y = UMAP_AXES_DATA$y, yend = UMAP_AXES_DATA$y + c(0, UMAP_AXES_DATA$y_len), 
+           arrow = arrow(type = "closed", length = unit(10, 'pt'))) +
+  scale_color_manual(values = c(CELL_TYPE_MALIGNANT_C, CELL_TYPE_OLIGODENDROCYTE_C, CELL_TYPE_MYELOID_C, CELL_TYPE_ASTROCYTES_C, CELL_TYPE_NEURONS_C,
+                                CELL_TYPE_ENDOTHELIAL_C, CELL_TYPE_PERICYTES_C, CELL_TYPE_T_CELL_C, CELL_TYPE_NK_CELL_C)) +
+  labs(x="UMAP1", y= "UMAP2", color = "") + 
+  guides(color = guide_legend(override.aes = list(size = 5, alpha = 0.8),
+                              byrow = TRUE)) +
+  umap_theme() +
+  theme(legend.key.spacing.y = unit(10,"pt"), legend.position = "bottom")
+
+```
+
+# Figure 2g
+
+Compare the fraction of the malignant cell-states between long-term and short-term survivors
+
+```{r Fig.2g-fraction-of-malignant-states-by-survival}
+
+# Filter-out samples with low number of cells to prevent bias
+MIN_SAMPLE_SIZE <- 100
+
+# Exclude patients with more than 180 days from ICB initiation to tumor sampling
+PATIENTS_TO_EXCLUDE <- c("28", "182")
+
+
+MALIGNANT_CELL_TYPES <- 
+  metadata_ICB %>% 
+  dplyr::filter(malignant_group == "Malignant") %>% droplevels() %>% 
+  dplyr::pull(Cell_type) %>% levels()
+
+MALIGNANT_CELL_TYPES <- MALIGNANT_CELL_TYPES[MALIGNANT_CELL_TYPES != "Malignant (ND)"]
+
+
+malignant_fraction_by_sample_pre_summary <-
+  metadata_ICB %>% 
+  dplyr::filter(malignant_group == "Malignant",
+                Cell_type != "Malignant (ND)",
+                Rx == "Pre-ICB") %>% droplevels() %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID, Cell_type) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>% 
+  
+  # Set N=0 for cell types with no cells in a specific sample
+  tidyr::pivot_wider(id_cols = c(Rx, Patient_ID, Sample_ID), names_from = Cell_type, values_from = count, values_fill = 0) %>% 
+  tidyr::pivot_longer(cols = any_of(MALIGNANT_CELL_TYPES), 
+                      names_to = "Cell_type", values_to = "count") %>% 
+  
+  dplyr::mutate_at(c("Cell_type"), factor, levels = MALIGNANT_CELL_TYPES) %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID) %>% 
+  dplyr::mutate(total_sample = sum(count),
+                fraction = count/total_sample)
+
+
+malignant_fraction_by_patient_pre_summary <-
+  malignant_fraction_by_sample_pre_summary %>% 
+  dplyr::filter(Patient_ID %!in% PATIENTS_TO_EXCLUDE,
+                MIN_SAMPLE_SIZE <= total_sample) %>% 
+  dplyr::group_by(Rx, Patient_ID, Cell_type) %>% 
+  dplyr::summarise(mean_fraction = mean(fraction), .groups = "drop") %>% 
+  dplyr::left_join(project_metadata %>% 
+                     dplyr::select(Patient_ID, Overall_survival_18m), by = "Patient_ID") %>% 
+  dplyr::filter(!is.na(Overall_survival_18m))
+
+
+
+# STATISTICS
+malignant_fraction_by_patient_pre_stats <-
+  malignant_fraction_by_patient_pre_summary %>% 
+  dplyr::group_by(Cell_type) %>% 
+  rstatix::wilcox_test(mean_fraction ~ Overall_survival_18m) %>%
+  adjust_pvalue(method = "none") %>%
+  add_significance() %>% 
+  add_xy_position(x = "Cell_type", scales = "free")
+
+
+
+malignant_fraction_by_patient_pre_summary %>% 
+  ggplot(aes(x = Cell_type, y = mean_fraction)) + 
+  geom_point(aes(fill = Overall_survival_18m), color = "grey75", alpha = 0.5, position = position_jitterdodge()) + 
+  geom_boxplot(aes(fill = Overall_survival_18m), outlier.shape = NA, alpha = 0.8, linewidth = 0.8) + 
+  stat_pvalue_manual(malignant_fraction_by_patient_pre_stats, bracket.nudge.y = 0.05, hide.ns = FALSE, label = "{p.adj.signif}\n({p.adj})", size = 5) +
+  scale_fill_manual(values = c(SURVIVAL_SS_MALIGNANT_C, SURVIVAL_LS_MALIGNANT_C)) +
+  labs(title = "Malignant Cell States Fractions in Pre-ICB Samples",
+       subtitle = sprintf("Long-Term (LTS) vs Short-Term (STS) Survivors | n=%d patients | Samples >100 cells",
+                          n_distinct(malignant_fraction_by_patient_pre_summary$Patient_ID)), 
+       x = "Cell state", y = "Fraction of Malignant Cells", fill = "",
+       caption = "Patients 28 & 182 excluded | Pre-ICB samples only | Denominators include only the 5 malignant cell states") + 
+  lims(y = c(0,1.2)) +
+  default_theme_xrot_90() + 
+  theme(legend.key.spacing.y = unit(10,"pt"))
+
+```
+
+# Figure 2h
+
+Compare the fraction of the non-malignant (TME) cell-types between long-term and short-term survivors
+
+```{r Fig.2h-fraction-of-TME-cell-types-by-survival}
+
+# Filter-out samples with low number of cells to prevent bias
+MIN_SAMPLE_SIZE <- 100
+
+# Exclude patients with more than 180 days from ICB initiation to tumor sampling
+PATIENTS_TO_EXCLUDE <- c("28", "182")
+
+
+NON_MALIGNANT_CELL_TYPES <- 
+  metadata_ICB %>% 
+  dplyr::filter(malignant_group == "Non-malignant") %>% droplevels() %>% 
+  dplyr::pull(Cell_type) %>% levels()
+
+
+non_malignant_fraction_by_sample_pre_summary <-
+  metadata_ICB %>% 
+  dplyr::filter(malignant_group == "Non-malignant",
+                Rx == "Pre-ICB") %>% droplevels() %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID, Cell_type) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>% 
+  
+  # Set N=0 for cell types with no cells in a specific sample
+  tidyr::pivot_wider(id_cols = c(Rx, Patient_ID, Sample_ID), names_from = Cell_type, values_from = count, values_fill = 0) %>% 
+  tidyr::pivot_longer(cols = any_of(NON_MALIGNANT_CELL_TYPES), 
+                      names_to = "Cell_type", values_to = "count") %>% 
+  
+  dplyr::mutate_at(c("Cell_type"), factor, levels = NON_MALIGNANT_CELL_TYPES) %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID) %>% 
+  dplyr::mutate(total_sample = sum(count),
+                fraction = count/total_sample)
+
+
+non_malignant_fraction_by_patient_pre_summary <-
+  non_malignant_fraction_by_sample_pre_summary %>% 
+  dplyr::filter(Patient_ID %!in% PATIENTS_TO_EXCLUDE,
+                MIN_SAMPLE_SIZE <= total_sample) %>% 
+  dplyr::group_by(Rx, Patient_ID, Cell_type) %>% 
+  dplyr::summarise(mean_fraction = mean(fraction), .groups = "drop") %>% 
+  dplyr::left_join(project_metadata %>% 
+                     dplyr::select(Patient_ID, Overall_survival_18m), by = "Patient_ID") %>% 
+  dplyr::filter(!is.na(Overall_survival_18m))
+
+
+
+# STATISTICS
+non_malignant_fraction_by_patient_pre_stats <-
+  non_malignant_fraction_by_patient_pre_summary %>% 
+  dplyr::group_by(Cell_type) %>% 
+  rstatix::wilcox_test(mean_fraction ~ Overall_survival_18m) %>%
+  adjust_pvalue(method = "none") %>%
+  add_significance() %>% 
+  add_xy_position(x = "Cell_type", scales = "free")
+
+
+
+non_malignant_fraction_by_patient_pre_summary %>% 
+  ggplot(aes(x = Cell_type, y = mean_fraction)) + 
+  geom_point(aes(fill = Overall_survival_18m), color = "grey75", alpha = 0.5, position = position_jitterdodge()) + 
+  geom_boxplot(aes(fill = Overall_survival_18m), outlier.shape = NA, alpha = 0.8, linewidth = 0.8) + 
+  stat_pvalue_manual(non_malignant_fraction_by_patient_pre_stats, bracket.nudge.y = 0.05, hide.ns = FALSE, label = "{p.adj.signif}\n({p.adj})", size = 5) +
+  scale_fill_manual(values = c(SURVIVAL_SS_NON_MALIGNANT_C, SURVIVAL_LS_NON_MALIGNANT_C)) +
+  labs(title = "TME (Non-Malignant) Cell Type Fractions in Pre-ICB Samples",
+       subtitle = sprintf("Long-Term (LTS) vs Short-Term (STS) Survivors | n=%d patients | Samples >100 cells",
+                          n_distinct(malignant_fraction_by_patient_pre_summary$Patient_ID)), 
+       x = "Cell type", y = "Fraction of TME Cells", fill = "",
+       caption = "Patients 28 & 182 excluded | Pre-ICB samples only | Denominators include only the 8 TME cell types") + 
+  lims(y = c(0,1.2)) +
+  default_theme_xrot_90() + 
+  theme(legend.key.spacing.y = unit(10,"pt"))
+
+```
+
+# Figure 2k
+
+Fish plot describing the changes in malignant cell-states and TME cell types fractions following ICB treatment
+
+```{r Fig.2k-cell-types-re-distribution-by-ICB-treatment}
+
+# ---------------------------------------------------------------------------
+# --- PAIRED FISH PLOTS GROUPED BY MES-LIKE FRACTION CHANGES ---
+# ---------------------------------------------------------------------------
+# Creates curved fish plots for each patient with paired Pre/Post samples
+# Groups patients by MES-like fraction changes: Increase >25%, Decrease >25%, or Stable
+# UPDATED: Patient 25 uses 50-day intervals, others use flexible interval calculation
+# Skips patients without timeline data (no plots created for them)
+# ---------------------------------------------------------------------------
+
+# Load required libraries
+library(patchwork)
+
+cat("=== Starting Paired Fish Plot Analysis (MES Fraction Grouped) ===\n\n")
+
+# ---------------------------------------------------------------------------
+# STEP 0: LOAD CLINICAL DATA FOR TIMELINE
+# ---------------------------------------------------------------------------
+cat("Loading clinical metadata for timeline...\n")
+
+# Prepare timeline data
+timeline_df <- project_metadata %>%
+  select(
+    Patient_ID,
+    DaysDxtoICB,
+    collection_date_icb_pre,
+    collection_date_icb_post
+  ) %>%
+  mutate(across(c(DaysDxtoICB, collection_date_icb_pre, collection_date_icb_post), as.numeric)) %>%
+  filter(!is.na(Patient_ID) & !is.na(DaysDxtoICB) & !is.na(collection_date_icb_pre) & !is.na(collection_date_icb_post)) %>%
+  # Calculate absolute days from diagnosis
+  mutate(
+    pre_days_from_dx = DaysDxtoICB + collection_date_icb_pre,
+    post_days_from_dx = DaysDxtoICB + collection_date_icb_post
+  )
+
+cat(sprintf("Found timeline data for %d patients.\n\n", nrow(timeline_df)))
+
+
+# ---------------------------------------------------------------------------
+# STEP 1: DEFINE CELL TYPES
+# ---------------------------------------------------------------------------
+MALIGNANT_CELL_TYPES <- c("NPC-like", "OPC-like", "AC-like", "GPC-like", "MES-like")
+TME_CELL_TYPES <- c("Neurons", "Astrocyte", "Oligodendrocytes", "Pericytes", "Endothelial", "Myeloid", "NK-cell", "T-cell")
+
+cat("Malignant cell types (5) - in plot order from top to bottom:\n")
+for(ct in MALIGNANT_CELL_TYPES) cat(" -", ct, "\n")
+cat("\nTME cell types (8) - in plot order from top to bottom:\n")
+for(ct in TME_CELL_TYPES) cat(" -", ct, "\n")
+cat("\n** Grouping by MES-like fraction changes **\n")
+cat("** Using only samples with >=100 cells **\n")
+
+# ---------------------------------------------------------------------------
+# STEP 2: FILTER AND PREPARE DATA
+# ---------------------------------------------------------------------------
+cat("\nFiltering data for paired samples...\n")
+
+paired_patients <- metadata_ICB %>%
+  filter(grepl("_Pre|_Post", Sample_ID)) %>%
+  mutate(timepoint = ifelse(grepl("_Pre", Sample_ID), "Pre", "Post")) %>%
+  group_by(Patient_ID) %>%
+  summarise(has_pre = any(timepoint == "Pre"), has_post = any(timepoint == "Post"), .groups = "drop") %>%
+  filter(has_pre & has_post) %>%
+  pull(Patient_ID)
+
+cat(sprintf("Found %d patients with paired Pre/Post samples (after filtering)\n", length(paired_patients)))
+
+# Identify patients without timeline data
+patients_with_timeline <- intersect(paired_patients, timeline_df$Patient_ID)
+patients_without_timeline <- setdiff(paired_patients, timeline_df$Patient_ID)
+
+if(length(patients_without_timeline) > 0) {
+  cat(sprintf("\nWARNING: %d patients have samples but no timeline data and will be SKIPPED: %s\n", 
+              length(patients_without_timeline), 
+              paste(patients_without_timeline, collapse=", ")))
+}
+
+cat(sprintf("Proceeding with %d patients that have complete timeline data\n\n", length(patients_with_timeline)))
+
+# ---------------------------------------------------------------------------
+# STEP 3: CALCULATE MES-LIKE FRACTION CHANGES
+# ---------------------------------------------------------------------------
+cat("Calculating MES-like fraction changes for patient grouping...\n\n")
+
+get_mes_proportion <- function(data, timepoint_pattern) {
+  samples <- unique(data$Sample_ID[grepl(timepoint_pattern, data$Sample_ID)])
+  if(length(samples) == 0) return(0)
+  
+  sample_proportions <- sapply(samples, function(s) {
+    sample_data <- data %>% filter(Sample_ID == s)
+    malignant_cells <- sample_data %>% filter(Cell_type %in% MALIGNANT_CELL_TYPES)
+    if(nrow(malignant_cells) == 0) return(0)
+    sum(malignant_cells$Cell_type == "MES-like") / nrow(malignant_cells)
+  })
+  
+  mean(sample_proportions)
+}
+
+# Only calculate for patients with timeline data
+patient_mes_changes <- lapply(patients_with_timeline, function(pid) {
+  patient_data <- metadata_ICB %>% filter(Patient_ID == pid, grepl("_Pre|_Post", Sample_ID))
+  patient_data_mal <- patient_data %>% filter(Cell_type %in% MALIGNANT_CELL_TYPES)
+  if(nrow(patient_data_mal) == 0) return(NULL)
+  
+  pre_mes <- get_mes_proportion(patient_data_mal, "_Pre")
+  post_mes <- get_mes_proportion(patient_data_mal, "_Post")
+  mes_change <- post_mes - pre_mes
+  
+  group <- ifelse(mes_change > 0.25, "MES Increase (>25%)",
+                  ifelse(mes_change < -0.25, "MES Decrease (>25%)", "MES Stable (≤25% change)"))
+  
+  data.frame(Patient_ID = pid, pre_mes, post_mes, mes_change, group)
+}) %>%
+  bind_rows() %>%
+  arrange(group, desc(mes_change))
+
+# Print summary
+cat("\n=== MES-LIKE FRACTION CHANGE SUMMARY ===\n\n")
+summary_table <- patient_mes_changes %>%
+  group_by(group) %>%
+  summarise(count = n(), .groups = "drop")
+
+print(summary_table)
+cat("\n")
+
+# ---------------------------------------------------------------------------
+# STEP 4: CREATE FISH PLOT FUNCTION
+# ---------------------------------------------------------------------------
+create_fish_plot <- function(data_patient, cell_types, plot_title, color_palette, pre_days, post_days, patient_id = NULL) {
+  
+  get_averaged_proportions <- function(data, timepoint_pattern, cell_types) {
+    samples <- unique(data$Sample_ID[grepl(timepoint_pattern, data$Sample_ID)])
+    if(length(samples) == 0) return(data.frame(Cell_type = cell_types, proportion = 0))
+    
+    proportions_list <- lapply(samples, function(s) {
+      sample_data <- data %>%
+        filter(Sample_ID == s) %>%
+        count(Cell_type) %>%
+        # CRITICAL: Use only cells of the specified cell_types as denominator
+        # This ensures malignant uses malignant denominator, TME uses TME denominator
+        mutate(proportion = n / sum(n))
+      
+      data.frame(Cell_type = cell_types) %>%
+        left_join(sample_data, by = "Cell_type") %>%
+        mutate(proportion = ifelse(is.na(proportion), 0, proportion)) %>%
+        select(Cell_type, proportion)
+    })
+    
+    bind_rows(proportions_list) %>%
+      group_by(Cell_type) %>%
+      summarise(proportion = mean(proportion), .groups = "drop")
+  }
+  
+  complete_pre <- get_averaged_proportions(data_patient, "_Pre", cell_types)
+  complete_post <- get_averaged_proportions(data_patient, "_Post", cell_types)
+  
+  # Renormalize to ensure proportions sum to 1 (handles any numerical precision issues)
+  complete_pre$proportion <- complete_pre$proportion / sum(complete_pre$proportion)
+  complete_post$proportion <- complete_post$proportion / sum(complete_post$proportion)
+  
+  df_pre <- complete_pre %>%
+    arrange(factor(Cell_type, levels = cell_types)) %>%
+    mutate(cum_prop_end = cumsum(proportion), cum_prop_start = lag(cum_prop_end, default = 0))
+  
+  df_post <- complete_post %>%
+    arrange(match(Cell_type, df_pre$Cell_type)) %>%
+    mutate(cum_prop_end = cumsum(proportion), cum_prop_start = lag(cum_prop_end, default = 0))
+  
+  smooth_df <- lapply(1:nrow(df_pre), function(i) {
+    ct <- df_pre$Cell_type[i]
+    y_start_bottom <- df_pre$cum_prop_start[i]
+    y_start_top <- df_pre$cum_prop_end[i]
+    y_end_bottom <- df_post$cum_prop_start[df_post$Cell_type == ct]
+    y_end_top <- df_post$cum_prop_end[df_post$Cell_type == ct]
+    
+    n_points <- 100
+    x_seq <- seq(0, 1, length.out = n_points)
+    s_curve <- 1 / (1 + exp(-10 * (x_seq - 0.5)))
+    
+    x_real <- pre_days + x_seq * (post_days - pre_days)
+    
+    data.frame(
+      x = c(x_real, rev(x_real)),
+      y = c(y_start_bottom + (y_end_bottom - y_start_bottom) * s_curve,
+            rev(y_start_top + (y_end_top - y_start_top) * s_curve)),
+      Cell_type = ct
+    )
+  }) %>% bind_rows()
+  
+  # Use 50-day intervals for Patient 25, otherwise use smart calculation
+  span <- post_days - pre_days
+  if (!is.null(patient_id) && patient_id == 25) {
+    # Force 50-day intervals for Patient 25
+    nice_interval <- 50
+    start_break <- floor(pre_days / nice_interval) * nice_interval
+    axis_breaks <- seq(from = start_break, to = post_days, by = nice_interval)
+  } else if (span > 0) {
+    # Original smart interval calculation for other patients
+    rough_interval <- span / 7
+    nice_interval <- max(floor(rough_interval / 10) * 10, 10) 
+    start_break <- floor(pre_days / nice_interval) * nice_interval
+    axis_breaks <- seq(from = start_break, to = post_days, by = nice_interval)
+  } else {
+    axis_breaks <- c(pre_days, post_days)
+  }
+
+  p <- ggplot() +
+    geom_polygon(data = smooth_df, aes(x = x, y = y, fill = Cell_type), alpha = 0.8) +
+    geom_vline(xintercept = c(pre_days, post_days), linetype = "solid", color = "gray40", linewidth = 0.5) +
+    scale_fill_manual(
+      values = color_palette,
+      name = "Cell Type",
+      limits = if(all(cell_types %in% MALIGNANT_CELL_TYPES)) {
+        rev(MALIGNANT_CELL_TYPES)
+      } else {
+        rev(TME_CELL_TYPES)
+      }
+    ) +
+    scale_y_continuous(labels = scales::percent_format(), expand = c(0, 0)) +
+    
+    # Use limits to prevent the axis from extending past the data range
+    scale_x_continuous(
+      breaks = axis_breaks, 
+      limits = c(pre_days, post_days),
+      expand = c(0, 0)
+    ) +
+    
+    labs(
+      title = plot_title,
+      x = "Days from Diagnosis",
+      y = "Fraction"
+    ) +
+    theme_classic() +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 10),
+      legend.position = "right",
+      legend.key.size = unit(0.4, "cm"),
+      legend.text = element_text(size = 8),
+      axis.text = element_text(size = 9),
+      axis.line = element_line(color = "black", linewidth = 0.3)
+    )
+  
+  return(p)
+}
+
+
+# ---------------------------------------------------------------------------
+# STEP 5: DEFINE COLOR PALETTES
+# ---------------------------------------------------------------------------
+malignant_colors <- c("NPC-like" = "#003399", "OPC-like" = "#6699CC", "AC-like" = "#FFB366", "GPC-like" = "#FF8899", "MES-like" = "#CC0000")
+tme_colors <- c("Neurons" = "#003399", "Astrocyte" = "#0066CC", "Oligodendrocytes" = "#3399CC", "Pericytes" = "#FFBB00", "Endothelial" = "#FF9900", "Myeloid" = "#FF6600", "NK-cell" = "#FF3300", "T-cell" = "#CC0000")
+
+# ---------------------------------------------------------------------------
+# STEP 6: CREATE OUTPUT DIRECTORIES
+# ---------------------------------------------------------------------------
+base_output_dir <- "../data/ouputs/coding_ouputs"
+output_dir_increase <- file.path(base_output_dir, "fishplots_mes_increase")
+output_dir_decrease <- file.path(base_output_dir, "fishplots_mes_decrease")
+output_dir_stable <- file.path(base_output_dir, "fishplots_mes_stable")
+dir.create(output_dir_increase, recursive = TRUE, showWarnings = FALSE)
+dir.create(output_dir_decrease, recursive = TRUE, showWarnings = FALSE)
+dir.create(output_dir_stable, recursive = TRUE, showWarnings = FALSE)
+
+# ---------------------------------------------------------------------------
+# STEP 7: PROCESS EACH GROUP AND CREATE PLOTS
+# ---------------------------------------------------------------------------
+for (group_name in unique(patient_mes_changes$group)) {
+  
+  cat(sprintf("\n=== Processing %s ===\n", group_name))
+  
+  group_patients <- patient_mes_changes %>% filter(group == group_name) %>% pull(Patient_ID)
+  output_dir <- switch(group_name,
+                       "MES Increase (>25%)" = output_dir_increase,
+                       "MES Decrease (>25%)" = output_dir_decrease,
+                       output_dir_stable)
+  
+  for (pid in group_patients) {
+    cat(sprintf("\nProcessing Patient %s...\n", pid))
+    
+    patient_timeline <- timeline_df %>% filter(Patient_ID == pid)
+    if(nrow(patient_timeline) == 0) {
+      cat(sprintf("  ! Warning: Timeline data not found for %s. Skipping plot.\n", pid))
+      next
+    }
+    
+    pre_d <- patient_timeline$pre_days_from_dx[1]
+    post_d <- patient_timeline$post_days_from_dx[1]
+    cat(sprintf("  Timeline: Day %d (Pre) to Day %d (Post)\n", round(pre_d), round(post_d)))
+    
+    patient_info <- patient_mes_changes %>% filter(Patient_ID == pid)
+    cat(sprintf("  MES fraction: %.1f%% → %.1f%% (Change: %+.1f%%)\n",
+                patient_info$pre_mes * 100, patient_info$post_mes * 100, patient_info$mes_change * 100))
+    
+    patient_data <- metadata_ICB %>% filter(Patient_ID == pid, grepl("_Pre|_Post", Sample_ID))
+    patient_data_mal <- patient_data %>% filter(Cell_type %in% MALIGNANT_CELL_TYPES)
+    patient_data_tme <- patient_data %>% filter(Cell_type %in% TME_CELL_TYPES)
+    
+    p_malignant <- NULL
+    if (nrow(patient_data_mal) > 0) {
+      p_malignant <- create_fish_plot(patient_data_mal, MALIGNANT_CELL_TYPES,
+                                      sprintf("Patient %s - Malignant (MES %+.0f%%)", pid, patient_info$mes_change * 100),
+                                      malignant_colors, pre_d, post_d, patient_id = pid)
+      cat("  ✓ Created malignant plot\n")
+    }
+    
+    p_tme <- NULL
+    if (nrow(patient_data_tme) > 0) {
+      p_tme <- create_fish_plot(patient_data_tme, TME_CELL_TYPES,
+                                sprintf("Patient %s - Non-malignant", pid),
+                                tme_colors, pre_d, post_d, patient_id = pid)
+      cat("  ✓ Created TME plot\n")
+    }
+    
+    if (!is.null(p_malignant) || !is.null(p_tme)) {
+      if (!is.null(p_malignant) && !is.null(p_tme)) {
+        combined_plot <- p_malignant / p_tme
+        plot_height <- 6
+      } else {
+        combined_plot <- p_malignant %||% p_tme
+        plot_height <- 3
+      }
+      
+      output_file <- file.path(output_dir, sprintf("fishplot_patient_%s.pdf", pid))
+      ggsave(output_file, plot = combined_plot, width = 8, height = plot_height, device = "pdf")
+      cat(sprintf("  ✓ Saved combined plot to: %s\n", output_file))
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# STEP 8: CREATE COMBINED SUMMARY PLOTS
+# ---------------------------------------------------------------------------
+cat("\n=== Creating Combined Group Plots ===\n")
+
+create_and_save_summary <- function(pids, group_label, out_dir) {
+    if(length(pids) == 0) return()
+    
+    plots_list <- lapply(pids, function(pid) {
+        patient_timeline <- timeline_df %>% filter(Patient_ID == pid)
+        if(nrow(patient_timeline) == 0) return(NULL)
+        
+        patient_data_mal <- final_metadata_df %>% 
+            filter(Patient_ID == pid, grepl("_Pre|_Post", Sample_ID), Cell_type %in% MALIGNANT_CELL_TYPES)
+        
+        if(nrow(patient_data_mal) > 0) {
+            patient_info <- patient_mes_changes %>% filter(Patient_ID == pid)
+            create_fish_plot(patient_data_mal, MALIGNANT_CELL_TYPES, 
+                           sprintf("%s (%+.0f%%)", pid, patient_info$mes_change * 100),
+                           malignant_colors, patient_timeline$pre_days_from_dx[1], 
+                           patient_timeline$post_days_from_dx[1], patient_id = pid)
+        } else {
+            NULL
+        }
+    })
+    
+    plots_list <- plots_list[!sapply(plots_list, is.null)]
+    
+    if(length(plots_list) > 0) {
+        combined_plot <- wrap_plots(plots_list, ncol = 2)
+        ggsave(file.path(out_dir, sprintf("combined_%s_malignant.pdf", tolower(group_label))),
+               combined_plot, width = 16, height = ceiling(length(plots_list)/2) * 3)
+        cat(sprintf("✓ Saved combined %s malignant plots\n", tolower(group_label)))
+    }
+}
+
+increase_pids <- patient_mes_changes %>% filter(group == "MES Increase (>25%)") %>% pull(Patient_ID)
+decrease_pids <- patient_mes_changes %>% filter(group == "MES Decrease (>25%)") %>% pull(Patient_ID)
+stable_pids <- patient_mes_changes %>% filter(group == "MES Stable (≤25% change)") %>% pull(Patient_ID)
+
+create_and_save_summary(increase_pids, "increase", output_dir_increase)
+create_and_save_summary(decrease_pids, "decrease", output_dir_decrease)
+create_and_save_summary(stable_pids, "stable", output_dir_stable)
+
+# ---------------------------------------------------------------------------
+# STEP 9: CREATE VISUALIZATION OF MES CHANGES
+# ---------------------------------------------------------------------------
+cat("\n=== Creating MES Change Visualization ===\n")
+
+if(nrow(patient_mes_changes) > 0) {
+  mes_change_plot <- ggplot(patient_mes_changes, aes(x = pre_mes, y = post_mes, color = group)) +
+    geom_point(size = 3) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+    geom_abline(intercept = 0.25, slope = 1, linetype = "dotted", color = "red") +
+    geom_abline(intercept = -0.25, slope = 1, linetype = "dotted", color = "blue") +
+    scale_x_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+    scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+    scale_color_manual(values = c("MES Increase (>25%)" = "red", "MES Decrease (>25%)" = "blue", "MES Stable (≤25% change)" = "gray50")) +
+    labs(x = "Pre-treatment MES-like Fraction", y = "Post-treatment MES-like Fraction", color = "Group",
+         title = "MES-like Fraction Changes (Samples >=100 cells)") +
+    theme_minimal() +
+    theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5, face = "bold"))
+  
+  ggsave(file.path(base_output_dir, "mes_fraction_changes_scatter.pdf"), mes_change_plot, width = 8, height = 8)
+  cat("✓ Saved MES fraction change scatter plot\n")
+}
+
+# ---------------------------------------------------------------------------
+# STEP 10: FINAL SUMMARY
+# ---------------------------------------------------------------------------
+cat("\n=== FINAL SUMMARY ===\n")
+cat(sprintf("Total patients with paired samples: %d\n", length(paired_patients)))
+cat(sprintf("Patients with timeline data: %d\n", length(patients_with_timeline)))
+if(length(patients_without_timeline) > 0) {
+  cat(sprintf("Patients SKIPPED (no timeline data): %s\n", 
+              paste(patients_without_timeline, collapse=", ")))
+}
+cat(sprintf("Patients with calculable MES fractions: %d\n", nrow(patient_mes_changes)))
+print(summary_table)
+cat("\n** All calculations use only samples with >=100 cells **\n")
+cat("\nOutputs:\n")
+cat("  MES Increase plots:", output_dir_increase, "\n")
+cat("  MES Decrease plots:", output_dir_decrease, "\n")
+cat("  MES Stable plots:", output_dir_stable, "\n")
+cat("\n=== Analysis Complete ===\n")
+```
+
+# Extended Data Figure 7a
+
+Extracting main meta-programs (MPs) to describe the main heterogeneity within the malignant cell-states. The MPs were calculated by NMF analysis calculated at different ranks
+
+```{r Ex.Fig.7a-malignant-cell-NMF-analysis}
+
+metadata_malignant <- metadata_ICB %>% dplyr::filter(malignant_group == "Malignant") %>% droplevels()
+metadata_malignant %>% dim() # 345094  15
+
+
+nmf_GBM_cells_per_sample_fast <- readRDS(file = "../data/nmf_GBM_per_sample_multiple_ranks_fast_only_malignant.rds")
+
+
+QUANTILE_THRESHOLD <- 0.99
+
+NUMBER_OF_CLUSTERS <- 10 # 15  20  25
+MIN_SIGNATURES_PER_CLUSTER <- 5 # 4  2
+MINIMAL_FRACTION_ROBUST_GENES <- 0.4 # 0.5
+
+
+# (A.1) iterate over SAMPLES
+nmf_GBM_cells_per_sample_metaprograms <- 
+  map(seq_along(nmf_GBM_cells_per_sample_fast), function(nmf_sample_index) { 
+    
+    nmf_sample_results <- nmf_GBM_cells_per_sample_fast[[nmf_sample_index]]
+    sample_id <- names(nmf_GBM_cells_per_sample_fast)[nmf_sample_index]
+    
+    if(sample_id %in% c("122_Post-Vax_Tags_pilot")) { return(list()) }
+    
+    # (A.2) iterate over RANKS
+    nmf_sample_results_metaprograms <-
+      map(seq_along(nmf_sample_results), function(nmf_sample_rank_index) {
+        
+        nmf_sample_rank_results <- nmf_sample_results[[nmf_sample_rank_index]]
+        rank <- nmf_sample_rank_index + 3 # since the ranks are 4 to 9
+        
+        
+        # (B) calculate metaprograms by TOP PERCENTILE
+        nmf_sample_rank_results_metaprograms <- 
+          nmf_sample_rank_results$w %>% 
+          apply(2, function(nmf_results) {
+            
+            nmf_results_df <- 
+              nmf_results %>% 
+              as.data.frame() %>% 
+              magrittr::set_names(c("nmf_score")) %>% 
+              tibble::rownames_to_column(var = "gene_name")
+            
+            
+            quantile_threshold_score <- quantile(nmf_results_df$nmf_score, probs = QUANTILE_THRESHOLD) %>% as.numeric()
+            
+            nmf_results_df %>% 
+              dplyr::filter(nmf_score >= quantile_threshold_score) %>%
+              dplyr::arrange(-nmf_score) %>% 
+              dplyr::pull(gene_name)
+            
+            
+          }, simplify = FALSE) %>% 
+          magrittr::set_names(paste0(sample_id, ".", rank, ".", 1:length(.)))
+        
+      }) %>% unlist(recursive = FALSE)
+    
+    
+    # (C) for each patient, CLUSTER together similar signatures
+    NUMBER_OF_CLUSTERS_DENDOGRAM <- 8
+    
+    nmf_sample_metaprograms_jaccard <-
+      outer(X = nmf_sample_results_metaprograms,
+            Y = nmf_sample_results_metaprograms,
+            FUN = Vectorize(scalop::jaccard))
+    
+    
+    hclust_sample  <- hclust(as.dist(1-nmf_sample_metaprograms_jaccard), method="average") # create an object of class hclust which is a list that describes the tree produced by the clustering process
+    hclust_sample  <- reorder(as.dendrogram(hclust_sample), colMeans(nmf_sample_metaprograms_jaccard)) # the leaves of the dendrogram are reordered so as to be in an order as consistent as possible with the weights
+    nmf_sample_metaprograms_jaccard <- nmf_sample_metaprograms_jaccard[order.dendrogram(hclust_sample), order.dendrogram(hclust_sample)] # Now re-order the original cor matrix
+    
+    
+    
+    # (D) create a summary of the signatures by cluster - move parameters outside
+    sample_signature_summary <- 
+      cutree(hclust_sample, k = NUMBER_OF_CLUSTERS) %>% 
+      as.data.frame() %>% 
+      `colnames<-`(c("hclust_cluster")) %>% 
+      tibble::rownames_to_column(var = "signature_id")
+    
+    sample_signatures_list <- 
+      sample_signature_summary %>% 
+      dplyr::group_by(hclust_cluster) %>% 
+      dplyr::summarise(count = n()) %>% 
+      dplyr::filter(count >= MIN_SIGNATURES_PER_CLUSTER) %>% 
+      pull(hclust_cluster) %>% 
+      map(function(hclust_cluster_id) {
+        
+        cluster_signature_ids <- 
+          sample_signature_summary %>% 
+          dplyr::filter(hclust_cluster == hclust_cluster_id) %>% 
+          dplyr::pull(signature_id)
+        
+        nmf_sample_results_metaprograms[cluster_signature_ids] %>% unlist() %>% as.character() %>% 
+          table() %>% as.data.frame() %>% 
+          `colnames<-`(c("gene_name", "count")) %>% 
+          dplyr::arrange(-count) %>%
+          dplyr::mutate(fraction = count/length(cluster_signature_ids)) %>% 
+          dplyr::filter(fraction > MINIMAL_FRACTION_ROBUST_GENES) %>% 
+          dplyr::pull(gene_name) %>% 
+          as.character()  
+        
+      }) 
+    
+    if(length(sample_signatures_list) == 0) {return(list()) } 
+    
+    sample_signatures_list %>% magrittr::set_names(paste0(sample_id, ".", 1:length(.)))
+    
+  })
+
+metaprograms_all <- nmf_GBM_cells_per_sample_metaprograms %>% unlist(recursive = FALSE)
+length(metaprograms_all) # 106
+
+# metaprograms_all %>% names()
+
+
+# (E) for all patients, CLUSTER together similar signatures
+metaprograms_all_jaccard <-
+  outer(X = metaprograms_all,
+        Y = metaprograms_all,
+        FUN = Vectorize(scalop::jaccard))
+
+
+hclust_all  <- hclust(as.dist(1-metaprograms_all_jaccard), method="average") # create an object of class hclust which is a list that describes the tree produced by the clustering process
+hclust_all  <- reorder(as.dendrogram(hclust_all), colMeans(metaprograms_all_jaccard)) # the leaves of the dendrogram are reordered so as to be in an order as consistent as possible with the weights
+metaprograms_all_jaccard <- metaprograms_all_jaccard[order.dendrogram(hclust_all), order.dendrogram(hclust_all)] # Now re-order the original cor matrix
+
+
+
+# (F) create a summary of the signatures by cluster
+NUMBER_OF_CLUSTERS_MP <- 20  # 15  25  50 (25)
+MIN_SIGNATURES_PER_CLUSTER_MP <- 4 # 4
+MINIMAL_FRACTION_ROBUST_GENES_MP <- 0.3 # 0.3
+
+
+signatures_all_summary <- 
+  cutree(hclust_all, k = NUMBER_OF_CLUSTERS_MP) %>% 
+  as.data.frame() %>% 
+  `colnames<-`(c("hclust_cluster")) %>% 
+  tibble::rownames_to_column(var = "signature_id")
+
+GBM_nmf_fast_metaprograms <- 
+  signatures_all_summary %>% 
+  dplyr::group_by(hclust_cluster) %>% 
+  dplyr::summarise(count = n()) %>% 
+  dplyr::filter(count >= MIN_SIGNATURES_PER_CLUSTER_MP) %>% 
+  pull(hclust_cluster) %>% 
+  map(function(hclust_cluster_id) {
+    
+    cluster_signature_ids <- 
+      signatures_all_summary %>% 
+      dplyr::filter(hclust_cluster == hclust_cluster_id) %>% 
+      dplyr::pull(signature_id)
+    
+    metaprograms_all[cluster_signature_ids] %>% unlist() %>% as.character() %>% 
+      table() %>% as.data.frame() %>% 
+      `colnames<-`(c("gene_name", "count")) %>% 
+      dplyr::arrange(-count) %>%
+      dplyr::mutate(fraction = count/length(cluster_signature_ids)) %>% 
+      dplyr::filter(fraction > MINIMAL_FRACTION_ROBUST_GENES_MP) %>% 
+      dplyr::pull(gene_name) %>% 
+      as.character()  
+  })
+
+MIN_GENES_PER_SIGNATURE <- 3
+
+# look at signatures with more than MIN_GENES_PER_SIGNATURE genes
+GBM_nmf_fast_metaprograms <- GBM_nmf_fast_metaprograms[lengths(GBM_nmf_fast_metaprograms) > MIN_GENES_PER_SIGNATURE]
+GBM_nmf_fast_metaprograms
+
+
+GBM_nmf_programs_by_metaprograms <- split(signatures_all_summary$signature_id, signatures_all_summary$hclust_cluster)
+GBM_nmf_programs_by_metaprograms <- GBM_nmf_programs_by_metaprograms[MIN_SIGNATURES_PER_CLUSTER_MP <= lengths(GBM_nmf_programs_by_metaprograms)]
+names(GBM_nmf_programs_by_metaprograms) <- c("ND.1", "ND.2", "Cycling", "AC-like", "OPC-like", "NPC-like", "GPC-like", "ND.3", "MES-like", "ND.4")
+
+
+GBM_nmf_programs_by_metaprograms %>% length() # 10
+
+
+GBM_nmf_programs_by_metaprograms_df <-
+  seq_along(GBM_nmf_programs_by_metaprograms) %>% 
+  map(function(index) { 
+    
+    data.frame(MP_name = names(GBM_nmf_programs_by_metaprograms)[index],
+               program_id = GBM_nmf_programs_by_metaprograms[[index]])  
+    
+  }) %>% do.call(rbind, .)
+
+
+GBM_nmf_metaprograms_index_ranges <-
+  data.frame(program_id = rownames(metaprograms_all_jaccard)) %>% 
+  tibble::rowid_to_column(var = "program_order") %>% 
+  dplyr::left_join(GBM_nmf_programs_by_metaprograms_df, by = "program_id") %>% 
+  dplyr::filter(!is.na(MP_name)) %>% 
+  dplyr::group_by(MP_name) %>% 
+  dplyr::summarise(min_program_index = min(program_order),
+                   max_program_index = max(program_order))
+
+
+
+boxfunction <- function(MP_name, min_program_index, max_program_index) {
+  annotate(geom = "rect", xmin = 106-min_program_index+1.5, xmax = 106-max_program_index+0.5, ymin = min_program_index-0.5, ymax = max_program_index+0.5, 
+           alpha = 0, linewidth = 0.8, color = "grey25")
+}
+
+
+
+MAX_JACCARD_VALUE_TRIM <- 0.4
+
+jaccard_all_matrix <-
+  metaprograms_all_jaccard %>% 
+  reshape2::melt() %>% 
+  dplyr::mutate(value = case_when(Var1 == Var2 ~ NA, 
+                                  MAX_JACCARD_VALUE_TRIM < value ~ MAX_JACCARD_VALUE_TRIM,
+                                  .default = value)) %>% 
+  ggplot() +
+  geom_tile(aes(x = fct_rev(Var1), y = Var2, fill=value)) +
+  purrr::pmap(GBM_nmf_metaprograms_index_ranges, boxfunction) +
+  scale_fill_gradient(low = "white", high = HEATMAP_HIGH_VALUE_C,
+                      guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) +
+  labs(x = "Malignant NMF programs", y = "Malignant NMF programs", fill = "Jaccard score") + 
+  theme_classic(base_size = 16) +
+  theme(panel.border = element_rect(colour = "black", fill=NA, linewidth=1), axis.line = element_blank(),
+        plot.title = element_text(face = "bold"), plot.subtitle = element_text(lineheight = 1.1),
+        axis.text = element_blank(), axis.ticks = element_blank(),
+        # axis.text.x = element_text(vjust = 0.5, angle = 90, hjust = 1),
+        plot.title.position = "plot")
+
+
+jaccard_all_matrix
+
+```
+
+# Extended Data Figure 7b
+
+Dot-plot of selected cell-type markers deferentially-expressed by different cell-types
+
+```{r Ex.Fig.7b-differential-expressed-genes-by-cell-type}
+
+exp_mat_all_tpm_HLA <- readRDS("../data/exp_mat_all_tpm_HLA.rds")
+
+exp_mat_all_tpm_HLA %>% dim() # 8859  666948
+exp_mat_all_HLA_logged <- log2(exp_mat_all_tpm_HLA/10 +1)
+exp_mat_all_HLA <- exp_mat_all_HLA_logged %>% scalop::rowcenter()
+exp_mat_all_HLA %>% dim() # 8859  666948
+
+
+cell_type_markers_GBM <- data.frame(gene_name = c("EGFR", "VEGFA", "HILPDA", "MEOX2", "KLHDC8A", "PTPRZ1", "LHFPL3", "MAG", "MOG", "OLIG1", "OLIG2", "MOBP", "MBP", "CD14", "CD86", "CD163", "FCGR3A", "TLR2", "MS4A7", "GFAP", "S100B", "ALDH1L1", "SOX9", "RTN1", "SNAP25", "GAD2", "KCNC2", "SYNPR", "FSTL4", "VWF", "CLDN5", "CARMN", "COL3A1", "COL1A1", "TAGLN", "CD3D", "CD3E", "CD3G", "CD4", "CD8A", "CD8B", "AOAH", "TXK", "NKG7", "GNLY", "KLRB1", "KLRC1", "KLRD1", "KLRF1", "NCAM1", "FCGR3A"),
+                                    Cell_type = c("Malignant", "Malignant", "Malignant", "Malignant", "Malignant", "Malignant", "Malignant", "Oligodendrocytes", "Oligodendrocytes", "Oligodendrocytes", "Oligodendrocytes", "Oligodendrocytes", "Oligodendrocytes", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Astrocyte", "Astrocyte", "Astrocyte", "Astrocyte", "Neurons", "Neurons", "Neurons", "Neurons", "Neurons", "Neurons", "Endothelial", "Endothelial", "Pericytes", "Pericytes", "Pericytes", "Pericytes", "T-cell", "T-cell", "T-cell", "T-cell", "T-cell", "T-cell", "NK-cell", "NK-cell", "NK-cell", "NK-cell", "NK-cell", "NK-cell", "NK-cell", "NK-cell", "NK-cell", "NK-cell"))
+cell_type_markers_GBM$gene_name[cell_type_markers_GBM$gene_name %!in% rownames(exp_mat_all_tpm_HLA)] # FCGR3A  KLRB1  FCGR3A
+cell_type_markers_GBM <- cell_type_markers_GBM %>% dplyr::filter(gene_name %in% rownames(exp_mat_all_tpm_HLA))
+cell_type_markers_GBM <-
+  cell_type_markers_GBM %>%
+  dplyr::filter(Cell_type %!in% c("T-cell", "NK-cell") |
+                (Cell_type %in% c("T-cell", "NK-cell") & gene_name %in% c("CD3E", "CD4", "CD8A", "KLRC1", "KLRD1", "NKG7"))) %>%
+  dplyr::mutate(Cell_type = case_when(Cell_type %in% c("T-cell", "NK-cell") ~ "Lymphocytes",
+                                      .default = Cell_type))
+
+
+cell_type_markers_median_exp <- exp_mat_all_HLA[unique(cell_type_markers_GBM$gene_name), ] %>% apply(1, median)
+cell_type_markers_median_exp %>% length() # 40
+
+
+cell_type_markers_median_exp_mat <- 
+  unique(cell_type_markers_GBM$gene_name) %>% map(function(gene_name) { 
+    
+    gene_exp_median <- cell_type_markers_median_exp[[gene_name]]
+    gene_exp_median < exp_mat_all_HLA[gene_name, ]
+  
+  }) %>% do.call(rbind, .)
+
+cell_type_markers_median_exp_mat %>% dim() # 40  666948
+rownames(cell_type_markers_median_exp_mat) <- unique(cell_type_markers_GBM$gene_name)
+
+
+MIN_CELLS_PER_CELL_TYPE <- 5
+
+fraction_of_cells_above_median <-
+  metadata_ICB$Sample_ID %>% unique() %>% 
+  map(function(cur_sample_id) {
+    
+    print(cur_sample_id)
+    
+    metadata_malignant_non_malignant_sample <- sample_cell_ids <- metadata_ICB %>% dplyr::filter(Sample_ID == cur_sample_id)
+    
+    cell_ids_by_cell_type_sample <- split(metadata_ICB$Cell_ID, metadata_ICB$Cell_type_grouped)
+    
+    cell_ids_by_cell_type_sample <- cell_ids_by_cell_type_sample[MIN_CELLS_PER_CELL_TYPE <= lengths(cell_ids_by_cell_type_sample)]
+    cell_ids_by_cell_type_sample %>% lengths()
+    
+    fraction_of_cells_above_median_per_cell_type <-
+      names(cell_ids_by_cell_type_sample) %>% 
+      map(function(cur_cell_type) {
+        
+        # cur_cell_type <- "AC-like"
+        
+        cur_cell_type_cell_ids <- cell_ids_by_cell_type_sample[[cur_cell_type]]
+        total_cells_above_median <- cell_type_markers_median_exp_mat[, cur_cell_type_cell_ids] %>% rowSums()
+        fraction_above_median <- total_cells_above_median/length(cur_cell_type_cell_ids)
+        
+        avg_exp <- exp_mat_all_HLA[rownames(cell_type_markers_median_exp_mat), cur_cell_type_cell_ids] %>% rowMeans()
+        
+        cbind(fraction_above_median, avg_exp) %>% reshape2::melt(varnames = c("gene_name", "category"), value.name = "value") %>% 
+          dplyr::mutate(Cell_type = cur_cell_type)
+        
+      }) %>% do.call(rbind, .)
+    
+    
+    fraction_of_cells_above_median_per_cell_type %>% 
+      dplyr::mutate(Sample_ID = cur_sample_id)
+    
+  }) %>% do.call(rbind, .)
+
+
+fraction_of_cells_above_median_summary <-
+  fraction_of_cells_above_median %>% 
+  dplyr::group_by(gene_name, category, Cell_type) %>% 
+  dplyr::summarise(mean_value = mean(value), .groups = "drop") %>% 
+  dplyr::left_join(cell_type_markers_GBM %>% 
+                     dplyr::select(gene_name, Cell_type_gene = Cell_type), by = "gene_name", relationship = "many-to-many") %>% 
+  tidyr::pivot_wider(id_cols = c("gene_name", "Cell_type", "Cell_type_gene"), names_from = "category", values_from = "mean_value") 
+
+
+
+MAX_EXP_ABS_THRESHOLD <- 3
+
+fraction_of_cells_above_median_summary %>% 
+  dplyr::mutate_at(c("Cell_type", "Cell_type_gene"), factor, levels = c("Malignant", "Oligodendrocytes", "Myeloid", "Astrocyte", "Neurons", "Endothelial", "Pericytes", "Lymphocytes")) %>%
+  dplyr::mutate(avg_exp_trim = case_when(avg_exp < -MAX_EXP_ABS_THRESHOLD ~ -MAX_EXP_ABS_THRESHOLD,
+                                         MAX_EXP_ABS_THRESHOLD < avg_exp ~ MAX_EXP_ABS_THRESHOLD,
+                                         .default = avg_exp)) %>% 
+  dplyr::filter(0.01 < fraction_above_median) %>%
+  ggplot(aes(x = gene_name, y = fct_rev(Cell_type))) +
+  geom_point(aes(size = 100*fraction_above_median, fill = avg_exp_trim), shape = 21) +
+  # geom_point(aes(size = 100*fraction_above_median, fill = avg_exp), shape = 21) + 
+  facet_grid(cols = vars(Cell_type_gene), scales = "free_x", space = "free_x") + 
+  scale_fill_gradient2(low = HEATMAP_LOW_VALUE_C, high = HEATMAP_HIGH_VALUE_C, mid = "white", midpoint = 0, breaks = c(-2.5,0,2.5),
+                       guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", frame.linewidth = 0.5)) +
+  scale_size(range = c(1, 15)) + 
+  labs(x = "", y = "", size = " % expressing cells", fill = "Exp") + 
+  default_theme_xrot_90_border() +
+  theme(strip.background.x = element_blank(), strip.text.x = element_blank(),
+        panel.spacing.x=unit(0, "pt"),
+        axis.text.y = element_text(size = 30))
+
+```
+
+# Extended Data Figure 7c
+
+Distribution of malignant cell-states and TME cell-types by patient. The mean fraction was used for patients with multiple samples at a specific time-point
+
+```{r Ex.Fig.7c-cell-type-distribution-by-patient}
+
+# per-patient fractions
+cell_type_fraction_by_sample_summary <-
+  metadata_ICB %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID, malignant_group, Cell_type_grouped, Cell_type) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>% 
+  dplyr::group_by(Rx, Patient_ID, Sample_ID) %>% 
+  dplyr::mutate(total_sample = sum(count),
+                fraction = count/total_sample)
+  
+  
+cell_type_fraction_by_patient_summary <-
+  cell_type_fraction_by_sample_summary %>% 
+  dplyr::group_by(Rx, Patient_ID, malignant_group, Cell_type_grouped, Cell_type) %>% 
+  dplyr::summarise(mean_fraction = mean(fraction), .groups = "drop")
+
+
+
+cell_type_fraction_by_patient_summary %>% 
+  dplyr::group_by(Rx, Patient_ID, malignant_group, Cell_type_grouped) %>% 
+  dplyr::summarise(mean_fraction = sum(mean_fraction), .groups = "drop") %>% 
+  ggplot(aes(x = Patient_ID, y = mean_fraction, fill = Cell_type_grouped)) + 
+  geom_bar(stat = "identity", alpha = 0.8, color = "grey25", linewidth = 0.5, position = position_fill()) +
+  facet_grid(cols = vars(Rx), scales = "free_x", space = "free_x") +
+  scale_fill_manual(values = c(CELL_TYPE_MALIGNANT_C, CELL_TYPE_OLIGODENDROCYTE_C, CELL_TYPE_MYELOID_C, CELL_TYPE_ASTROCYTES_C, CELL_TYPE_NEURONS_C,
+                               CELL_TYPE_ENDOTHELIAL_C, CELL_TYPE_PERICYTES_C, CELL_TYPE_T_CELL_C, CELL_TYPE_NK_CELL_C)) +
+  labs(x = "", y = "Fraction", fill = "") + 
+  default_theme_xrot_90_border() + 
+  theme(panel.spacing.y = unit(0,"pt"),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_text(size = 14))
+
+
+
+cell_type_fraction_by_patient_summary %>% 
+  ggplot(aes(x = Patient_ID, y = mean_fraction, fill = Cell_type)) + 
+  geom_bar(stat = "identity", alpha = 0.8, color = "grey25", linewidth = 0.5, position = position_fill()) +
+  facet_grid(rows = vars(malignant_group), cols = vars(Rx), scales = "free", space = "free") + 
+  facetted_pos_scales(y = list(scale_y_continuous(expand = c(0,0), labels = label_comma()), # https://stackoverflow.com/a/65570612
+                               scale_y_reverse(expand = c(0,0), labels = label_comma()))) + 
+  scale_fill_manual(values = c(GBM_STATE_AC_C, GBM_STATE_MES_C, GBM_STATE_GPC_C, GBM_STATE_NPC_C, GBM_STATE_OPC_C, GBM_STATE_ND_C, # "grey75",
+                               CELL_TYPE_OLIGODENDROCYTE_C, CELL_TYPE_MYELOID_C, CELL_TYPE_ASTROCYTES_C, CELL_TYPE_NEURONS_C,
+                               CELL_TYPE_ENDOTHELIAL_C, CELL_TYPE_PERICYTES_C, CELL_TYPE_T_CELL_C, CELL_TYPE_NK_CELL_C)) +
+  labs(x = "", y = "Fraction", fill = "") + 
+  default_theme_xrot_90_border() + 
+  theme(panel.spacing.y = unit(0,"pt"),
+        legend.key.spacing.y = unit(10,"pt"),
+        axis.text.x = element_text(size = 14))
+
+```
+
+# 
