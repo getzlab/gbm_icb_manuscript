@@ -1,0 +1,378 @@
+---
+title: "Applying single-cell scoring method to our bulk RNA-seq data"
+output: html_notebook
+---
+
+This notebook generates results displayed in Extended Data Figure 6.
+```{r}
+library(tidyverse)
+library(readxl)
+library(HGNChelper)
+library(scalop)
+library(ggpubr)
+```
+
+Load TPMs (our data) and cell state signatures from various publications
+```{r}
+tpm <- read_excel('../../../results/2025-06-06_single_cell_scores/sTable6_rnaseq_counts_tpms.xlsx', sheet = 2, skip = 1)
+gbm_sigs_neftel <- read_excel('../../../results/2025-06-06_single_cell_scores/Neftel_et_al_Table_S2.xlsx', skip = 4)
+gbm_sigs_garofano <- read_excel('../../../results/2025-06-06_single_cell_scores/Garofano_et_al_Tables.xlsx', sheet = 'Tab 26 - Supplementary Table 6j', skip = 2)
+gbm_sigs_nomura <- read_excel('../../../results/2025-06-06_single_cell_scores/Nomura_et_al_Tables.xlsx', sheet = 'TableS2', skip = 4)
+gbm_sigs_couturier <- read_csv('../../../results/2025-06-06_single_cell_scores/Couturier_et_al_signatures.csv')
+
+head(tpm)
+head(gbm_sigs_neftel)
+head(gbm_sigs_garofano)
+head(gbm_sigs_nomura)
+head(gbm_sigs_couturier)
+```
+
+Reformat the Couturier et al. signatures to match the format of the others
+```{r}
+gbm_sigs_couturier <- gbm_sigs_couturier %>%
+  dplyr::select(-hk, -cc1, -cc2)
+
+couturier_sigs <- setdiff(names(gbm_sigs_couturier), c('ensembl', 'gene_names'))
+
+gbm_sigs_couturier_reformat <- couturier_sigs %>%
+  map(function(sig) {
+    gbm_sigs_couturier %>%
+      arrange(desc(.data[[sig]])) %>%
+      slice_head(n = 50) %>%
+      transmute(!!toupper(sig) := gene_names)
+  }) %>% bind_cols
+
+gbm_sigs_couturier <- gbm_sigs_couturier_reformat
+rm(gbm_sigs_couturier_reformat)
+head(gbm_sigs_couturier)
+```
+
+Update gene symbols in the TPMs (keep only one replacement when multiple exist)
+```{r}
+tpm_check <- checkGeneSymbols(unique(tpm$Description))
+
+tpm_replacement_genes <- tpm_check %>% 
+  filter(!Approved, !is.na(Suggested.Symbol)) %>% 
+  separate_rows(Suggested.Symbol, sep = ' /// ') %>% 
+  distinct(x, Suggested.Symbol) %>%
+  deframe
+
+tpm <- tpm %>% 
+  mutate(Description = ifelse(
+    Description %in% names(tpm_replacement_genes),
+    tpm_replacement_genes[Description],
+    Description
+  ))
+```
+
+Combine and reformat signatures
+```{r}
+gbm_sigs <- bind_cols(
+  gbm_sigs_neftel %>% rename_with(~ paste0('Neftel_', .)),
+  gbm_sigs_garofano %>% rename_with(~ paste0('Garofano_', .)),
+  gbm_sigs_nomura %>% rename_with(~ paste0('Nomura_', .)),
+  gbm_sigs_couturier %>% rename_with(~ paste0('Couturier_', .))
+)
+
+gbm_sigs <- gbm_sigs %>%
+  dplyr::select(-`Neftel_G1/S`, -`Neftel_G2/M`, -Nomura_MP_3_CC) %>%
+  map(~ .x[!is.na(.x)])
+```
+
+Define TME signatures as given in Neftel et al. paper
+```{r}
+tme_sigs <- list(
+  Neftel_macrophage = c('CD14', 'AIF1', 'FCER1G', 'FCGR3A', 'TYROBP', 'CSF1R'),
+  Neftel_t_cell = c('CD2', 'CD3D', 'CD3E', 'CD3G'),
+  Neftel_oligodendrocyte = c('MBP', 'TF', 'PLP1', 'MAG', 'MOG', 'CLDN11')
+)
+```
+
+Combine signatures
+```{r}
+sigs <- c(gbm_sigs, tme_sigs)
+```
+
+Check if any gene symbols are absent from our data
+```{r}
+all_sig_genes <- unique(unlist(sigs, use.names = FALSE))
+
+absent_genes <- setdiff(all_sig_genes, unique(tpm$Description))
+
+sigs_check <- checkGeneSymbols(absent_genes)
+sigs_check
+```
+
+```{r}
+sigs_replacement_genes <- sigs_check %>% 
+  filter(!Approved, !is.na(Suggested.Symbol)) %>% 
+  separate_rows(Suggested.Symbol, sep = ' /// ') %>% 
+  group_by(x) %>% 
+  summarize(Suggested.Symbol = list(unique(Suggested.Symbol)), .groups = 'drop') %>% 
+  deframe
+
+sigs <- lapply(sigs, function(gene_list) {
+  unlist(map(gene_list, ~ if (.x %in% names(sigs_replacement_genes)) sigs_replacement_genes[[.x]] else .x))
+})
+```
+
+Check again
+```{r}
+all_sig_genes <- unique(unlist(sigs, use.names = FALSE))
+
+absent_genes <- setdiff(all_sig_genes, unique(tpm$Description))
+
+sigs_check <- checkGeneSymbols(absent_genes)
+sigs_check
+```
+
+Remove rows of 0, sum within gene symbols, and log-normalize TPMs
+```{r}
+log2_tpm <- tpm %>% 
+  dplyr::select(-Name) %>% 
+  filter(!if_all(-Description, ~ .x == 0)) %>%
+  group_by(Description) %>% 
+  summarize(across(everything(), sum), .groups = 'drop') %>% 
+  mutate(across(-Description, ~ log2(.x + 1))) %>%
+  column_to_rownames('Description') %>%
+  as.matrix(.)
+```
+
+First round of scoring
+```{r}
+set.seed(42)
+scores <- sigScores(
+  m = log2_tpm,
+  sigs = sigs
+)
+```
+
+Which signature was removed?
+```{r}
+setdiff(names(sigs), names(scores))
+```
+
+Remove this signature
+```{r}
+sigs <- sigs[names(sigs) != setdiff(names(sigs), names(scores))]
+```
+
+Remove genes from signatures that are lowly correlated with their signature scores
+```{r}
+set.seed(43)
+sigs_filtered <- filter_signatures(
+  m = log2_tpm,
+  sigs = sigs
+)
+```
+
+Score again
+```{r}
+set.seed(44)
+scores_2 <- sigScores(
+  m = log2_tpm,
+  sigs = sigs_filtered
+)
+scores_2 <- scores_2[colnames(log2_tpm),]
+```
+
+Find genes that are highly correlated with the signature scores
+```{r}
+cor_cutoff = 0.8
+
+log2_tpm_t <- t(log2_tpm)
+
+cors <- cor(log2_tpm_t, scores_2)
+
+sigs_expanded <- lapply(colnames(scores_2), function(sig) {
+  cor_vals <- cors[, sig]
+  names(cor_vals)[cor_vals > cor_cutoff]
+})
+
+names(sigs_expanded) <- colnames(scores_2)
+
+map(sigs_expanded, length)
+```
+
+Combine the filtered and expanded lists
+```{r}
+sigs_merged <- map2(sigs_filtered, sigs_expanded, union)
+
+map(sigs_merged, length)
+```
+
+Score one more time
+```{r}
+set.seed(45)
+scores_3 <- sigScores(
+  m = log2_tpm,
+  sigs = sigs_merged
+)
+scores_3 <- scores_3[colnames(log2_tpm),]
+```
+
+Assign dominant subtype/class for each group of signatures
+- Ignore "low-quality" Nomura states per the paper (MP 12 was excluded above)
+- Ignore Neftel TME states
+- Collapse two sets of Nomura signatures into NEU-like and stress
+```{r}
+assignments <- scores_3 %>%
+  select(
+    -Nomura_MP_1_RP,
+    -Nomura_MP_11_MIC,
+    -names(tme_sigs)
+  ) %>%
+  rownames_to_column('sample_id') %>%
+  pivot_longer(
+    cols = starts_with('Neftel_') | starts_with('Garofano_') | starts_with('Nomura_') | starts_with('Couturier_'),
+    names_to = 'source',
+    values_to = 'value'
+  ) %>% 
+  mutate(source_group = case_when(
+    str_starts(source, 'Neftel_') ~ 'Neftel',
+    str_starts(source, 'Garofano_') ~ 'Garofano',
+    str_starts(source, 'Nomura_') ~ 'Nomura',
+    str_starts(source, 'Couturier_') ~ 'Couturier'
+  )) %>% 
+  group_by(sample_id, source_group) %>% 
+  slice_max(order_by = value, n = 1, with_ties = FALSE) %>%
+  ungroup %>%
+  select(-value) %>%
+  pivot_wider(names_from = source_group, values_from = source, names_prefix = 'max_') %>%
+  mutate(max_Nomura = case_when(
+    max_Nomura %in% c('Nomura_MP_9_ExN', 'Nomura_MP_14_NRGN') ~ 'Nomura_NEUlike',
+    max_Nomura %in% c('Nomura_MP_10_Stress1', 'Nomura_MP_15_Stress2') ~ 'Nomura_Stress',
+    TRUE ~ max_Nomura
+  ))
+
+assignments %>% count(max_Garofano) %>% arrange(desc(n))
+assignments %>% count(max_Neftel) %>% arrange(desc(n))
+assignments %>% count(max_Nomura) %>% arrange(desc(n))
+assignments %>% count(max_Couturier) %>% arrange(desc(n))
+```
+
+Add assignments to the augmented patient sheet
+```{r}
+sample_sheet <- read_tsv('../../../results/2024-06-20_cohort-sheets-180/sample_cohort_sheet.tsv', show_col_types = FALSE)
+augmented_sheet <- read_tsv('../../../results/2025-06-06_single_cell_scores/augmented_pt_sheet.tsv')
+
+assignments_merge <- sample_sheet %>% 
+  inner_join(assignments, by = 'sample_id') %>% 
+  select(sample_id_legacy, all_of(names(assignments)[-1]))
+
+augmented_sheet <- augmented_sheet %>% 
+  left_join(assignments_merge, by = c('sample_id_legacy_pre' = 'sample_id_legacy')) %>% 
+  left_join(assignments_merge, by = c('sample_id_legacy_post' = 'sample_id_legacy'), suffix = c('_pre', '_post'))
+
+write_tsv(augmented_sheet, '../../../results/2025-06-06_single_cell_scores/augmented_pt_sheet_with_single_cell_assignments_with_all_classifiers.tsv', na = '')
+```
+
+Correspondence with ssGSEA scores of Verhaak subtypes and MHC class I/II scores
+```{r}
+verhaak_scores <- read_excel('../../../results/2025-06-06_single_cell_scores/sTable8_Verhaak_ssGSEA_scores.xlsx', skip = 1)
+mhc_scores <- read_tsv('../../../results/2024-08-09_mhc-ssgsea/mhc_ssgsea_results.tsv', show_col_types = FALSE)
+
+mhc_scores <- mhc_scores %>% 
+  dplyr::select(-GOCC_MHC_PROTEIN_COMPLEX) %>% 
+  rename(
+    mhc_class_I = GOCC_MHC_CLASS_I_PROTEIN_COMPLEX,
+    mhc_class_II = GOCC_MHC_CLASS_II_PROTEIN_COMPLEX
+  )
+
+comparison <- scores_3 %>% 
+  rownames_to_column('sample_id') %>% 
+  as_tibble %>%
+  left_join(verhaak_scores, by = 'sample_id') %>% 
+  left_join(mhc_scores, by = 'sample_id') %>% 
+  mutate(across(where(is.numeric), ~ scale(.))) %>%
+  pivot_longer(cols = names(scores_3), names_to = 'single_cell', values_to = 'single_cell_score') %>% 
+  pivot_longer(cols = c(starts_with('VERHAAK_GLIO'), mhc_class_I, mhc_class_II), names_to = 'ssGSEA', values_to = 'ssGSEA_score') %>% 
+  mutate(
+    single_cell = factor(single_cell, levels = c('Neftel_NPC1', 'Neftel_NPC2', 'Neftel_OPC', 'Neftel_AC', 'Neftel_MES1', 'Neftel_MES2',
+                                                 paste0('Neftel_', c('macrophage', 'oligodendrocyte', 't_cell')),
+                                                 'Garofano_NEU', 'Garofano_PPR', 'Garofano_GPM', 'Garofano_MTC',
+                                                 paste0('Nomura_', setdiff(names(gbm_sigs_nomura), 'MP_12_LQ')),
+                                                 paste0('Couturier_', names(gbm_sigs_couturier)))),
+    ssGSEA = str_remove(ssGSEA, 'VERHAAK_GLIOBLASTOMA_'),
+    ssGSEA = factor(ssGSEA, levels = c('PRONEURAL', 'NEURAL', 'CLASSICAL', 'MESENCHYMAL', 'mhc_class_I', 'mhc_class_II'))
+  )
+
+comparison_subset <- comparison %>%
+  dplyr::filter(
+    ssGSEA %in% c('PRONEURAL', 'MESENCHYMAL'),
+    single_cell %in% c('Neftel_MES1', 'Neftel_NPC1', 'Garofano_GPM', 'Garofano_NEU',
+                       'Nomura_MP_6_MES', 'Nomura_MP_2_OPC', 'Couturier_MES1', 'Couturier_OPC')
+  ) %>% 
+  mutate(single_cell = factor(
+    single_cell,
+    levels = c('Neftel_MES1', 'Neftel_NPC1', 'Garofano_GPM', 'Garofano_NEU',
+               'Nomura_MP_6_MES', 'Nomura_MP_2_OPC', 'Couturier_MES1', 'Couturier_OPC')
+  ))
+
+comparison_cors <- comparison %>%
+  group_by(ssGSEA, single_cell) %>%
+  summarize(
+    spearman_rho = cor(ssGSEA_score, single_cell_score, method = 'spearman')[[1]],
+    p_value = cor.test(ssGSEA_score, single_cell_score, method = 'spearman')$p.value,
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    p_less_than_0pt05 = p_value < 0.05,
+    cor_direction = ifelse(sign(spearman_rho) == 1, 'positive', 'negative')
+  ) %>%
+  arrange(ssGSEA, single_cell) %>%
+  dplyr::rename(ssGSEA_signature = ssGSEA, single_cell_signature = single_cell)
+
+write_tsv(comparison_cors, '../../../results/2025-06-06_single_cell_scores/score_correlations.tsv')
+
+comparison_plot <- ggplot(comparison, aes(x = ssGSEA_score, y = single_cell_score)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  labs(x = 'ssGSEA z-score', y = 'single-cell z-score') +
+  facet_grid(ssGSEA ~ single_cell) +
+  theme_bw()
+
+comparison_subset_plot <- ggscatter(
+  comparison_subset,
+  x = 'ssGSEA_score',
+  y = 'single_cell_score',
+  facet.by = c('ssGSEA', 'single_cell'),
+  add = 'reg.line',
+  add.params = list(color = 'red'),
+  cor.coef = TRUE,
+  cor.coeff.args = list(method = 'spearman', cor.coef.name = 'rho', label.sep = '\n')
+)
+
+ggsave(
+  '../../../results/2025-06-06_single_cell_scores/score_comparison.png',
+  comparison_plot,
+  dpi = 450,
+  width = 36,
+  height = 8,
+  units = 'in'
+)
+
+ggsave(
+  '../../../results/2025-06-06_single_cell_scores/score_comparison_subset_paper.png',
+  comparison_subset_plot,
+  dpi = 450,
+  width = 12,
+  height = 6,
+  units = 'in'
+)
+
+ggsave(
+  '../../../results/2025-06-06_single_cell_scores/score_comparison_subset_paper.pdf',
+  comparison_subset_plot,
+  width = 12,
+  height = 6,
+  units = 'in'
+)
+
+comparison_plot
+comparison_subset_plot
+```
+
+```{r}
+write_tsv(scores_3 %>% rownames_to_column('sample_id'), '../../../results/2025-06-06_single_cell_scores/single_cell_scores_with_all_classifiers.tsv')
+```

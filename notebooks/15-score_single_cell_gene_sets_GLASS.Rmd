@@ -1,0 +1,301 @@
+---
+title: "Applying single-cell scoring method to bulk RNA-seq data from GLASS"
+output: html_notebook
+---
+
+This notebook generates results displayed in Extended Data Figure 6.
+```{r}
+library(tidyverse)
+library(readxl)
+library(org.Hs.eg.db)
+library(HGNChelper)
+library(scalop)
+library(ggpubr)
+```
+
+Load TPMs from GLASS, sample metadata for GLASS, and cell state signatures from various publications
+```{r}
+tpm <- read_tsv('../../../results/2025-06-06_single_cell_scores/all_abundances_noNormalization.tsv', show_col_types = FALSE)
+metadata_glass <- read_tsv('../../../results/2025-06-06_single_cell_scores/glass_augmented_updated_9.19.24.tsv', show_col_types = FALSE)
+gbm_sigs_neftel <- read_excel('../../../results/2025-06-06_single_cell_scores/Neftel_et_al_Table_S2.xlsx', skip = 4)
+gbm_sigs_garofano <- read_excel('../../../results/2025-06-06_single_cell_scores/Garofano_et_al_Tables.xlsx', sheet = 'Tab 26 - Supplementary Table 6j', skip = 2)
+gbm_sigs_nomura <- read_excel('../../../results/2025-06-06_single_cell_scores/Nomura_et_al_Tables.xlsx', sheet = 'TableS2', skip = 4)
+gbm_sigs_couturier <- read_csv('../../../results/2025-06-06_single_cell_scores/Couturier_et_al_signatures.csv')
+
+head(tpm)
+head(gbm_sigs_neftel)
+head(gbm_sigs_garofano)
+head(gbm_sigs_nomura)
+head(gbm_sigs_couturier)
+```
+
+Reformat the Couturier et al. signatures to match the format of the others
+```{r}
+gbm_sigs_couturier <- gbm_sigs_couturier %>%
+  dplyr::select(-hk, -cc1, -cc2)
+
+couturier_sigs <- setdiff(names(gbm_sigs_couturier), c('ensembl', 'gene_names'))
+
+gbm_sigs_couturier_reformat <- couturier_sigs %>%
+  map(function(sig) {
+    gbm_sigs_couturier %>%
+      arrange(desc(.data[[sig]])) %>%
+      slice_head(n = 50) %>%
+      transmute(!!toupper(sig) := gene_names)
+  }) %>% bind_cols
+
+gbm_sigs_couturier <- gbm_sigs_couturier_reformat
+rm(gbm_sigs_couturier_reformat)
+head(gbm_sigs_couturier)
+```
+
+Keep only GLASS samples of interest to us
+```{r}
+aliquots_keep <- c(
+  metadata_glass %>% pull(aliquot_barcode_pre),
+  metadata_glass %>% pull(aliquot_barcode_post)
+) %>%
+  discard(is.na) %>%
+  gsub('-', '.', .)
+
+tpm <- tpm %>%
+  dplyr::rename(ENSEMBL = `...1`) %>%
+  dplyr::select(ENSEMBL, all_of(aliquots_keep))
+```
+
+Convert ENSEMBL IDs to gene symbols
+```{r}
+conversion <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = tpm$ENSEMBL,
+  keytype = 'ENSEMBL',
+  columns = 'SYMBOL'
+  ) %>% 
+  group_by(ENSEMBL) %>% 
+  slice_head(n = 1)
+
+tpm <- tpm %>%
+  left_join(conversion, by = 'ENSEMBL') %>% 
+  relocate(SYMBOL) %>%
+  dplyr::select(-ENSEMBL) %>%
+  dplyr::rename(Description = SYMBOL) %>% 
+  filter(!is.na(Description))
+```
+
+Update gene symbols in the TPMs (keep only one replacement when multiple exist)
+```{r}
+tpm_check <- checkGeneSymbols(unique(tpm$Description))
+
+tpm_replacement_genes <- tpm_check %>% 
+  filter(!Approved, !is.na(Suggested.Symbol)) %>% 
+  separate_rows(Suggested.Symbol, sep = ' /// ') %>% 
+  distinct(x, Suggested.Symbol) %>%
+  deframe
+
+tpm <- tpm %>% 
+  mutate(Description = ifelse(
+    Description %in% names(tpm_replacement_genes),
+    tpm_replacement_genes[Description],
+    Description
+  ))
+```
+
+Combine and reformat signatures
+```{r}
+gbm_sigs <- bind_cols(
+  gbm_sigs_neftel %>% rename_with(~ paste0('Neftel_', .)),
+  gbm_sigs_garofano %>% rename_with(~ paste0('Garofano_', .)),
+  gbm_sigs_nomura %>% rename_with(~ paste0('Nomura_', .)),
+  gbm_sigs_couturier %>% rename_with(~ paste0('Couturier_', .))
+)
+
+gbm_sigs <- gbm_sigs %>%
+  dplyr::select(-`Neftel_G1/S`, -`Neftel_G2/M`, -Nomura_MP_3_CC) %>%
+  map(~ .x[!is.na(.x)])
+```
+
+Define TME signatures as given in Neftel et al. paper
+```{r}
+tme_sigs <- list(
+  Neftel_macrophage = c('CD14', 'AIF1', 'FCER1G', 'FCGR3A', 'TYROBP', 'CSF1R'),
+  Neftel_t_cell = c('CD2', 'CD3D', 'CD3E', 'CD3G'),
+  Neftel_oligodendrocyte = c('MBP', 'TF', 'PLP1', 'MAG', 'MOG', 'CLDN11')
+)
+```
+
+Combine signatures
+```{r}
+sigs <- c(gbm_sigs, tme_sigs)
+```
+
+Check if any gene symbols are absent from our data
+```{r}
+all_sig_genes <- unique(unlist(sigs, use.names = FALSE))
+
+absent_genes <- setdiff(all_sig_genes, unique(tpm$Description))
+
+sigs_check <- checkGeneSymbols(absent_genes)
+sigs_check
+```
+
+Harmonize gene symbols in the signatures
+```{r}
+sigs_replacement_genes <- sigs_check %>% 
+  filter(!Approved, !is.na(Suggested.Symbol)) %>% 
+  separate_rows(Suggested.Symbol, sep = ' /// ') %>% 
+  group_by(x) %>% 
+  summarize(Suggested.Symbol = list(unique(Suggested.Symbol)), .groups = 'drop') %>% 
+  deframe
+
+sigs <- lapply(sigs, function(gene_list) {
+  unlist(map(gene_list, ~ if (.x %in% names(sigs_replacement_genes)) sigs_replacement_genes[[.x]] else .x))
+})
+```
+
+Check again
+```{r}
+all_sig_genes <- unique(unlist(sigs, use.names = FALSE))
+
+absent_genes <- setdiff(all_sig_genes, unique(tpm$Description))
+
+sigs_check <- checkGeneSymbols(absent_genes)
+sigs_check
+```
+
+Remove rows of 0, sum within gene symbols, and log-normalize TPMs
+```{r}
+log2_tpm <- tpm %>% 
+  filter(!if_all(-Description, ~ .x == 0)) %>%
+  group_by(Description) %>% 
+  summarize(across(everything(), sum), .groups = 'drop') %>% 
+  mutate(across(-Description, ~ log2(.x + 1))) %>%
+  column_to_rownames('Description') %>%
+  as.matrix(.)
+```
+
+First round of scoring
+```{r}
+set.seed(42)
+scores <- sigScores(
+  m = log2_tpm,
+  sigs = sigs
+)
+```
+
+Which signature was removed?
+```{r}
+setdiff(names(sigs), names(scores))
+```
+
+Remove this signature
+```{r}
+sigs <- sigs[names(sigs) != setdiff(names(sigs), names(scores))]
+```
+
+Remove genes from signatures that are lowly correlated with their signature scores
+```{r}
+set.seed(43)
+sigs_filtered <- filter_signatures(
+  m = log2_tpm,
+  sigs = sigs
+)
+```
+
+Score again
+```{r}
+set.seed(44)
+scores_2 <- sigScores(
+  m = log2_tpm,
+  sigs = sigs_filtered
+)
+scores_2 <- scores_2[colnames(log2_tpm),]
+```
+
+Find genes that are highly correlated with the signature scores
+```{r}
+cor_cutoff = 0.8
+
+log2_tpm_t <- t(log2_tpm)
+
+cors <- cor(log2_tpm_t, scores_2)
+
+sigs_expanded <- lapply(colnames(scores_2), function(sig) {
+  cor_vals <- cors[, sig]
+  names(cor_vals)[cor_vals > cor_cutoff]
+})
+
+names(sigs_expanded) <- colnames(scores_2)
+
+map(sigs_expanded, length)
+```
+
+Combine the filtered and expanded lists
+```{r}
+sigs_merged <- map2(sigs_filtered, sigs_expanded, union)
+
+map(sigs_merged, length)
+```
+
+Score one more time
+```{r}
+set.seed(45)
+scores_3 <- sigScores(
+  m = log2_tpm,
+  sigs = sigs_merged
+)
+scores_3 <- scores_3[colnames(log2_tpm),]
+```
+
+Assign dominant subtype/class for each group of signatures
+- Ignore "low-quality" Nomura states per the paper (MP 12 was excluded above)
+- Ignore Neftel TME states
+- Collapse two sets of Nomura signatures into NEU-like and stress
+```{r}
+assignments <- scores_3 %>%
+  dplyr::select(
+    -Nomura_MP_1_RP,
+    -Nomura_MP_11_MIC,
+    -names(tme_sigs)
+  ) %>%
+  rownames_to_column('sample_id') %>%
+  pivot_longer(
+    cols = starts_with('Neftel_') | starts_with('Garofano_') | starts_with('Nomura_') | starts_with('Couturier_'),
+    names_to = 'source',
+    values_to = 'value'
+  ) %>%
+  mutate(source_group = case_when(
+    str_starts(source, 'Neftel_') ~ 'Neftel',
+    str_starts(source, 'Garofano_') ~ 'Garofano',
+    str_starts(source, 'Nomura_') ~ 'Nomura',
+    str_starts(source, 'Couturier_') ~ 'Couturier'
+  )) %>%
+  group_by(sample_id, source_group) %>% 
+  slice_max(order_by = value, n = 1, with_ties = FALSE) %>%
+  ungroup %>%
+  dplyr::select(-value) %>%
+  pivot_wider(names_from = source_group, values_from = source, names_prefix = 'max_') %>%
+  mutate(max_Nomura = case_when(
+    max_Nomura %in% c('Nomura_MP_9_ExN', 'Nomura_MP_14_NRGN') ~ 'Nomura_NEUlike',
+    max_Nomura %in% c('Nomura_MP_10_Stress1', 'Nomura_MP_15_Stress2') ~ 'Nomura_Stress',
+    TRUE ~ max_Nomura
+  ))
+
+assignments %>% count(max_Garofano) %>% arrange(desc(n))
+assignments %>% count(max_Neftel) %>% arrange(desc(n))
+assignments %>% count(max_Nomura) %>% arrange(desc(n))
+assignments %>% count(max_Couturier) %>% arrange(desc(n))
+```
+
+Add assignments to the metadata sheet
+```{r}
+assignments <- assignments %>%
+  mutate(sample_id = gsub('\\.', '-', sample_id))
+
+metadata_glass_with_assignments <- metadata_glass %>%
+  left_join(assignments, by = c('aliquot_barcode_pre' = 'sample_id')) %>%
+  left_join(assignments, by = c('aliquot_barcode_post' = 'sample_id'),
+            suffix = c('_pre', '_post'))
+
+write_tsv(metadata_glass_with_assignments, '../../../results/2025-06-06_single_cell_scores/glass_augmented_updated_9.19.24_with_single_cell_assignments_with_all_classifiers.tsv', na = '')
+write_tsv(scores_3 %>% rownames_to_column('sample_id') %>% mutate(sample_id = gsub('\\.', '-', sample_id)), '../../../results/2025-06-06_single_cell_scores/glass_single_cell_scores_with_all_classifiers.tsv')
+```
