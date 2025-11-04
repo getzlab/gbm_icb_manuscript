@@ -347,8 +347,6 @@ Fish plot describing the changes in malignant cell-states and TME cell types fra
 # ---------------------------------------------------------------------------
 # Creates curved fish plots for each patient with paired Pre/Post samples
 # Groups patients by MES-like fraction changes: Increase >25%, Decrease >25%, or Stable
-# UPDATED: Patient 25 uses 50-day intervals, others use flexible interval calculation
-# Skips patients without timeline data (no plots created for them)
 # ---------------------------------------------------------------------------
 
 # Load required libraries
