@@ -4,6 +4,27 @@ format: html
 editor: visual
 ---
 
+Run this notebook to generate
+
+* Figure 2i, 2j
+
+* Extended Data Figure 7d
+
+* Extended Data Figure 8a, 8b, 8c, 8d, 8e
+
+This script analyzes single-nucleus RNA-seq (snRNA-seq) pseudobulk data to investigate the cellular origins of Verhaak transcriptional subtypes and HLA expression, and their association with survival in the ICB cohort.
+
+- Bivariate Cox survival analysis of MES scores derived from malignant vs. TME compartments.
+
+- Heatmap of Verhaak signature genes correlating snRNA-seq pseudobulk with bulk RNA subtypes.
+
+- Analysis of the fractional contribution of each cell type to the overall MES signature.
+
+- Comparison of HLA class I/II scores and gene expression across malignant cell states.
+
+- Analysis of the cellular sources of HLA class I/II signals, stratified by MES vs. non-MES tumors.
+
+
 Load libraries, data and plotting themes
 
 ```{r setup, include=FALSE}
