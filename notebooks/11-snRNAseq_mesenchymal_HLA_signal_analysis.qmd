@@ -1027,7 +1027,7 @@ HLA_signatures_df <-
 
 
 # ============================================================================
-# ANALYSIS: Fraction of HLA Class I signal by cell type (Daniel's approach)
+# ANALYSIS: Fraction of HLA Class I signal by cell type
 # ============================================================================
 
 # (1) Calculate total HLA Class I reads by sample and cell type
