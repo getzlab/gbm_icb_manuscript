@@ -3,7 +3,7 @@ title: "CIBERSORTx and MHC expression analysis"
 output: html_notebook
 ---
 
-Run this notebook to generate Extended Data Figure 3i,l,m.
+Run this notebook to generate Extended Data Figure 4i,l,m.
 
 This notebook analyzes gene expression signatures and CIBERSORTx cell type fraction estimates.
 - Gene expression signatures:
