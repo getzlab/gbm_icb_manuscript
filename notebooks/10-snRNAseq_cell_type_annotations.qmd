@@ -16,7 +16,7 @@ This script analyzes single-nucleus RNA-seq (snRNA-seq) data from the ICB cohort
 
 - Malignant and TME cell fraction comparison between long-term (LTS) and short-term (STS) survivors.
 
-- Fish plots showing malignant/TME fraction changes from Pre- to Post-ICB.
+- Fish plots showing malignant/TME fraction changes from pre- to post-ICB.
 
 - NMF analysis to identify and cluster meta-programs.
 
