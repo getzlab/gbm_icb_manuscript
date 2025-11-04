@@ -3,7 +3,7 @@ title: "Cox regression comparison plots - GLASS SoC vs. ICB"
 output: html_notebook
 ---
 
-Run this notebook to generate Figure 1f-g.
+Run this notebook to generate Figure 1h-i.
 
 The notebook
 * Runs Cox regression on genomic variants in the GLASS and ICB cohorts
