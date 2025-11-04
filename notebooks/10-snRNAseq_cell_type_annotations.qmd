@@ -1162,5 +1162,3 @@ cell_type_fraction_by_patient_summary %>%
         axis.text.x = element_text(size = 14))
 
 ```
-
-# 
