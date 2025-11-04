@@ -4,8 +4,8 @@ output: html_notebook
 ---
 
 Run this notebook to generate
-* Figure 1e
-* Extended Data Figure 1g-i
+* Figure 1f
+* Extended Data Figure 1f-i
 
 This notebook tests associations of pre-ICB TMB with overall survival from ICB start.
 - OncoPanel data: assay-reported non-syn TMB
