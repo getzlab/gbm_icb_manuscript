@@ -4,6 +4,27 @@ format: html
 editor: visual
 ---
 
+Run this notebook to generate
+
+* Figure 2f, 2g, 2h, 2k
+
+* Extended Data Figure 7a, 7b, 7c
+
+This script analyzes single-nucleus RNA-seq (snRNA-seq) data from the ICB cohort to characterize malignant cell states and the tumor microenvironment (TME), and to associate tumor cellular composition with ICB outcomes.
+
+- UMAP visualization of all snRNA-seq cells by cell type.
+
+- Malignant and TME cell fraction comparison between long-term (LTS) and short-term (STS) survivors.
+
+- Fish plots showing malignant/TME fraction changes from Pre- to Post-ICB.
+
+- NMF analysis to identify and cluster meta-programs.
+
+- Dot plot of marker genes for cell type identification.
+
+- Distribution of malignant states and TME types across all patients.
+
+
 Load libraries, data and plotting themes
 
 ```{r setup, include=FALSE}
