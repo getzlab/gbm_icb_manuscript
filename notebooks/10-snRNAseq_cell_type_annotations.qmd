@@ -342,21 +342,16 @@ Fish plot describing the changes in malignant cell-states and TME cell types fra
 
 ```{r Fig.2k-cell-types-re-distribution-by-ICB-treatment}
 
-# ---------------------------------------------------------------------------
-# --- PAIRED FISH PLOTS GROUPED BY MES-LIKE FRACTION CHANGES ---
-# ---------------------------------------------------------------------------
-# Creates curved fish plots for each patient with paired Pre/Post samples
-# Groups patients by MES-like fraction changes: Increase >25%, Decrease >25%, or Stable
-# ---------------------------------------------------------------------------
+# PAIRED FISH PLOTS GROUPED BY MES-LIKE FRACTION CHANGES
 
 # Load required libraries
 library(patchwork)
 
 cat("=== Starting Paired Fish Plot Analysis (MES Fraction Grouped) ===\n\n")
 
-# ---------------------------------------------------------------------------
-# STEP 0: LOAD CLINICAL DATA FOR TIMELINE
-# ---------------------------------------------------------------------------
+
+# LOAD CLINICAL DATA FOR TIMELINE
+
 cat("Loading clinical metadata for timeline...\n")
 
 # Prepare timeline data
@@ -378,9 +373,9 @@ timeline_df <- project_metadata %>%
 cat(sprintf("Found timeline data for %d patients.\n\n", nrow(timeline_df)))
 
 
-# ---------------------------------------------------------------------------
-# STEP 1: DEFINE CELL TYPES
-# ---------------------------------------------------------------------------
+
+# DEFINE CELL TYPES
+
 MALIGNANT_CELL_TYPES <- c("NPC-like", "OPC-like", "AC-like", "GPC-like", "MES-like")
 TME_CELL_TYPES <- c("Neurons", "Astrocyte", "Oligodendrocytes", "Pericytes", "Endothelial", "Myeloid", "NK-cell", "T-cell")
 
@@ -391,9 +386,9 @@ for(ct in TME_CELL_TYPES) cat(" -", ct, "\n")
 cat("\n** Grouping by MES-like fraction changes **\n")
 cat("** Using only samples with >=100 cells **\n")
 
-# ---------------------------------------------------------------------------
-# STEP 2: FILTER AND PREPARE DATA
-# ---------------------------------------------------------------------------
+
+# FILTER AND PREPARE DATA
+
 cat("\nFiltering data for paired samples...\n")
 
 paired_patients <- metadata_ICB %>%
@@ -418,9 +413,9 @@ if(length(patients_without_timeline) > 0) {
 
 cat(sprintf("Proceeding with %d patients that have complete timeline data\n\n", length(patients_with_timeline)))
 
-# ---------------------------------------------------------------------------
-# STEP 3: CALCULATE MES-LIKE FRACTION CHANGES
-# ---------------------------------------------------------------------------
+
+# CALCULATE MES-LIKE FRACTION CHANGES
+
 cat("Calculating MES-like fraction changes for patient grouping...\n\n")
 
 get_mes_proportion <- function(data, timepoint_pattern) {
@@ -464,9 +459,9 @@ summary_table <- patient_mes_changes %>%
 print(summary_table)
 cat("\n")
 
-# ---------------------------------------------------------------------------
-# STEP 4: CREATE FISH PLOT FUNCTION
-# ---------------------------------------------------------------------------
+
+# CREATE FISH PLOT FUNCTION
+
 create_fish_plot <- function(data_patient, cell_types, plot_title, color_palette, pre_days, post_days, patient_id = NULL) {
   
   get_averaged_proportions <- function(data, timepoint_pattern, cell_types) {
@@ -585,15 +580,15 @@ create_fish_plot <- function(data_patient, cell_types, plot_title, color_palette
 }
 
 
-# ---------------------------------------------------------------------------
-# STEP 5: DEFINE COLOR PALETTES
-# ---------------------------------------------------------------------------
+
+# DEFINE COLOR PALETTES
+
 malignant_colors <- c("NPC-like" = "#003399", "OPC-like" = "#6699CC", "AC-like" = "#FFB366", "GPC-like" = "#FF8899", "MES-like" = "#CC0000")
 tme_colors <- c("Neurons" = "#003399", "Astrocyte" = "#0066CC", "Oligodendrocytes" = "#3399CC", "Pericytes" = "#FFBB00", "Endothelial" = "#FF9900", "Myeloid" = "#FF6600", "NK-cell" = "#FF3300", "T-cell" = "#CC0000")
 
-# ---------------------------------------------------------------------------
-# STEP 6: CREATE OUTPUT DIRECTORIES
-# ---------------------------------------------------------------------------
+
+# CREATE OUTPUT DIRECTORIES
+
 base_output_dir <- "../data/ouputs/coding_ouputs"
 output_dir_increase <- file.path(base_output_dir, "fishplots_mes_increase")
 output_dir_decrease <- file.path(base_output_dir, "fishplots_mes_decrease")
@@ -602,9 +597,9 @@ dir.create(output_dir_increase, recursive = TRUE, showWarnings = FALSE)
 dir.create(output_dir_decrease, recursive = TRUE, showWarnings = FALSE)
 dir.create(output_dir_stable, recursive = TRUE, showWarnings = FALSE)
 
-# ---------------------------------------------------------------------------
-# STEP 7: PROCESS EACH GROUP AND CREATE PLOTS
-# ---------------------------------------------------------------------------
+
+# PROCESS EACH GROUP AND CREATE PLOTS
+
 for (group_name in unique(patient_mes_changes$group)) {
   
   cat(sprintf("\n=== Processing %s ===\n", group_name))
@@ -668,9 +663,9 @@ for (group_name in unique(patient_mes_changes$group)) {
   }
 }
 
-# ---------------------------------------------------------------------------
-# STEP 8: CREATE COMBINED SUMMARY PLOTS
-# ---------------------------------------------------------------------------
+
+# CREATE COMBINED SUMMARY PLOTS
+
 cat("\n=== Creating Combined Group Plots ===\n")
 
 create_and_save_summary <- function(pids, group_label, out_dir) {
@@ -712,9 +707,9 @@ create_and_save_summary(increase_pids, "increase", output_dir_increase)
 create_and_save_summary(decrease_pids, "decrease", output_dir_decrease)
 create_and_save_summary(stable_pids, "stable", output_dir_stable)
 
-# ---------------------------------------------------------------------------
-# STEP 9: CREATE VISUALIZATION OF MES CHANGES
-# ---------------------------------------------------------------------------
+
+# CREATE VISUALIZATION OF MES CHANGES
+
 cat("\n=== Creating MES Change Visualization ===\n")
 
 if(nrow(patient_mes_changes) > 0) {
@@ -735,9 +730,9 @@ if(nrow(patient_mes_changes) > 0) {
   cat("✓ Saved MES fraction change scatter plot\n")
 }
 
-# ---------------------------------------------------------------------------
-# STEP 10: FINAL SUMMARY
-# ---------------------------------------------------------------------------
+
+# SUMMARY
+
 cat("\n=== FINAL SUMMARY ===\n")
 cat(sprintf("Total patients with paired samples: %d\n", length(paired_patients)))
 cat(sprintf("Patients with timeline data: %d\n", length(patients_with_timeline)))
