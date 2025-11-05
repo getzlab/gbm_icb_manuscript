@@ -253,8 +253,8 @@ assignments %>% count(max_Couturier) %>% arrange(desc(n))
 
 Add assignments to the augmented patient sheet
 ```{r}
-sample_sheet <- read_tsv('../../../results/2024-06-20_cohort-sheets-180/sample_cohort_sheet.tsv', show_col_types = FALSE)
-augmented_sheet <- read_tsv('../../../results/2025-06-06_single_cell_scores/augmented_pt_sheet.tsv')
+sample_sheet <- read_tsv('../data/sample_cohort_sheet.tsv', show_col_types = FALSE)
+augmented_sheet <- read_tsv('../data/augmented_pt_sheet.tsv')
 
 assignments_merge <- sample_sheet %>% 
   inner_join(assignments, by = 'sample_id') %>% 
@@ -269,8 +269,8 @@ write_tsv(augmented_sheet, '../../../results/2025-06-06_single_cell_scores/augme
 
 Correspondence with ssGSEA scores of Verhaak subtypes and MHC class I/II scores
 ```{r}
-verhaak_scores <- read_excel('../../../results/2025-06-06_single_cell_scores/sTable8_Verhaak_ssGSEA_scores.xlsx', skip = 1)
-mhc_scores <- read_tsv('../../../results/2024-08-09_mhc-ssgsea/mhc_ssgsea_results.tsv', show_col_types = FALSE)
+verhaak_scores <- read_excel('../data/icb_ssgsea_verhaak.xlsx', skip = 1)
+mhc_scores <- read_tsv('../data/icb_ssgsea_mhc.tsv', show_col_types = FALSE)
 
 mhc_scores <- mhc_scores %>% 
   dplyr::select(-GOCC_MHC_PROTEIN_COMPLEX) %>% 
