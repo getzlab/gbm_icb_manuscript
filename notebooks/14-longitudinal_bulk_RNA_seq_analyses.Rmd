@@ -36,7 +36,7 @@ library(readxl)
 library(stats)
 library(exact2x2)
 
-zenodo_dir_path <- '/Users/jackghannam/Partners HealthCare Dropbox/Jack Ghannam/GBM IBM figures/Submission/Nature Cancer/Revisions/Code_depo/Uploaded/bulk_transcriptional_classifiers_survival/bulk_transcriptional_classifiers'
+zenodo_dir_path <- "../data/bulk_transcriptional_classifiers"
 
 icb_data_raw <- read_tsv(file.path(zenodo_dir_path, "icb_cohort_unified.tsv"), show_col_types = FALSE)
 glass_data_raw <- read_tsv(file.path(zenodo_dir_path, "glass_cohort_clinical_subtypes.tsv"), show_col_types = FALSE)
