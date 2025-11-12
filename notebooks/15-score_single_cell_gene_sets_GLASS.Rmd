@@ -296,6 +296,6 @@ metadata_glass_with_assignments <- metadata_glass %>%
   left_join(assignments, by = c('aliquot_barcode_post' = 'sample_id'),
             suffix = c('_pre', '_post'))
 
-write_tsv(metadata_glass_with_assignments, '../../../results/2025-06-06_single_cell_scores/glass_augmented_updated_9.19.24_with_single_cell_assignments_with_all_classifiers.tsv', na = '')
-write_tsv(scores_3 %>% rownames_to_column('sample_id') %>% mutate(sample_id = gsub('\\.', '-', sample_id)), '../../../results/2025-06-06_single_cell_scores/glass_single_cell_scores_with_all_classifiers.tsv')
+# write_tsv(metadata_glass_with_assignments, '../../../results/2025-06-06_single_cell_scores/glass_augmented_updated_9.19.24_with_single_cell_assignments_with_all_classifiers.tsv', na = '')
+# write_tsv(scores_3 %>% rownames_to_column('sample_id') %>% mutate(sample_id = gsub('\\.', '-', sample_id)), '../../../results/2025-06-06_single_cell_scores/glass_single_cell_scores_with_all_classifiers.tsv')
 ```

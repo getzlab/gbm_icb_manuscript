@@ -251,22 +251,6 @@ assignments %>% count(max_Nomura) %>% arrange(desc(n))
 assignments %>% count(max_Couturier) %>% arrange(desc(n))
 ```
 
-Add assignments to the participant cohort sheet
-```{r}
-sample_sheet <- read_tsv('../data/sample_cohort_sheet.tsv', show_col_types = FALSE)
-participant_sheet <- read_tsv('../data/participant_cohort_sheet.tsv')
-
-assignments_merge <- sample_sheet %>% 
-  inner_join(assignments, by = 'sample_id') %>% 
-  select(sample_id_legacy, all_of(names(assignments)[-1]))
-
-participant_sheet <- participant_sheet %>% 
-  left_join(assignments_merge, by = c('sample_id_legacy_pre' = 'sample_id_legacy')) %>% 
-  left_join(assignments_merge, by = c('sample_id_legacy_post' = 'sample_id_legacy'), suffix = c('_pre', '_post'))
-
-write_tsv(participant_sheet, '../../../results/2025-06-06_single_cell_scores/augmented_pt_sheet_with_single_cell_assignments_with_all_classifiers.tsv', na = '')
-```
-
 Correspondence with ssGSEA scores of Verhaak subtypes and MHC class I/II scores
 ```{r}
 verhaak_scores <- read_excel('../data/icb_ssgsea_verhaak.xlsx', skip = 1)
