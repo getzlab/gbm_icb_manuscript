@@ -3,7 +3,7 @@ title: "Cox regression comparison plots - GLASS SoC vs. ICB"
 output: html_notebook
 ---
 
-Run this notebook to generate Figure 1h-i.
+Run this notebook to generate Figure 3a, 3d.
 
 The notebook
 * Runs Cox regression on genomic variants in the GLASS and ICB cohorts
@@ -130,9 +130,9 @@ Combine the panels
 p_combined <- ggarrange(p_volcano, p_comparison, ncol = 2, align = 'hv',
                         widths = c(1,1.5))
 
-p_combined %>% ggsave(filename = paste0(output_folder, '2ABEF.cox_combined.png'),
+p_combined %>% ggsave(filename = paste0(output_folder, '3AD.cox_combined.png'),
              dpi = 450, width = 11, height = 7, units = 'in')
-p_combined %>% ggsave(filename = paste0(output_folder, '2ABEF.cox_combined.pdf'),
+p_combined %>% ggsave(filename = paste0(output_folder, '3AD.cox_combined.pdf'),
              width = 11, height = 7)
 
 p_combined

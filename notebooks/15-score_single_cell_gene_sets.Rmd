@@ -14,11 +14,11 @@ library(ggpubr)
 
 Load TPMs (our data) and cell state signatures from various publications
 ```{r}
-tpm <- read_excel('../../../results/2025-06-06_single_cell_scores/sTable6_rnaseq_counts_tpms.xlsx', sheet = 2, skip = 1)
-gbm_sigs_neftel <- read_excel('../../../results/2025-06-06_single_cell_scores/Neftel_et_al_Table_S2.xlsx', skip = 4)
-gbm_sigs_garofano <- read_excel('../../../results/2025-06-06_single_cell_scores/Garofano_et_al_Tables.xlsx', sheet = 'Tab 26 - Supplementary Table 6j', skip = 2)
-gbm_sigs_nomura <- read_excel('../../../results/2025-06-06_single_cell_scores/Nomura_et_al_Tables.xlsx', sheet = 'TableS2', skip = 4)
-gbm_sigs_couturier <- read_csv('../../../results/2025-06-06_single_cell_scores/Couturier_et_al_signatures.csv')
+tpm <- read_excel('../data/rnaseq_counts_tpms.xlsx', sheet = 2, skip = 1)
+gbm_sigs_neftel <- read_excel('../data/Neftel_et_al_signatures.xlsx', skip = 4)
+gbm_sigs_garofano <- read_excel('../data/Garofano_et_al_signatures.xlsx', sheet = 'Tab 26 - Supplementary Table 6j', skip = 2)
+gbm_sigs_nomura <- read_excel('../data/Nomura_et_al_signatures.xlsx', sheet = 'TableS2', skip = 4)
+gbm_sigs_couturier <- read_csv('../data/Couturier_et_al_signatures.csv')
 
 head(tpm)
 head(gbm_sigs_neftel)
@@ -307,7 +307,7 @@ comparison_cors <- comparison %>%
   arrange(ssGSEA, single_cell) %>%
   dplyr::rename(ssGSEA_signature = ssGSEA, single_cell_signature = single_cell)
 
-write_tsv(comparison_cors, '../../../results/2025-06-06_single_cell_scores/score_correlations.tsv')
+write_tsv(comparison_cors, '../results/score_correlations.tsv')
 
 comparison_plot <- ggplot(comparison, aes(x = ssGSEA_score, y = single_cell_score)) +
   geom_point() +
@@ -328,7 +328,7 @@ comparison_subset_plot <- ggscatter(
 )
 
 ggsave(
-  '../../../results/2025-06-06_single_cell_scores/score_comparison.png',
+  '../results/score_comparison.png',
   comparison_plot,
   dpi = 450,
   width = 36,
@@ -337,7 +337,7 @@ ggsave(
 )
 
 ggsave(
-  '../../../results/2025-06-06_single_cell_scores/score_comparison_subset_paper.png',
+  '../results/score_comparison_subset_paper.png',
   comparison_subset_plot,
   dpi = 450,
   width = 12,
@@ -346,7 +346,7 @@ ggsave(
 )
 
 ggsave(
-  '../../../results/2025-06-06_single_cell_scores/score_comparison_subset_paper.pdf',
+  '../results/score_comparison_subset_paper.pdf',
   comparison_subset_plot,
   width = 12,
   height = 6,
@@ -358,5 +358,5 @@ comparison_subset_plot
 ```
 
 ```{r}
-write_tsv(scores_3 %>% rownames_to_column('sample_id'), '../../../results/2025-06-06_single_cell_scores/single_cell_scores_with_all_classifiers.tsv')
+write_tsv(scores_3 %>% rownames_to_column('sample_id'), '../results/single_cell_scores_with_all_classifiers.tsv')
 ```

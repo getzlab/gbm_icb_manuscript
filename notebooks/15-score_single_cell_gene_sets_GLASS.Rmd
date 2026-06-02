@@ -17,10 +17,10 @@ Load TPMs from GLASS, sample metadata for GLASS, and cell state signatures from 
 ```{r}
 tpm <- read_tsv('../../../results/2025-06-06_single_cell_scores/all_abundances_noNormalization.tsv', show_col_types = FALSE)
 metadata_glass <- read_tsv('../../../results/2025-06-06_single_cell_scores/glass_augmented_updated_9.19.24.tsv', show_col_types = FALSE)
-gbm_sigs_neftel <- read_excel('../../../results/2025-06-06_single_cell_scores/Neftel_et_al_Table_S2.xlsx', skip = 4)
-gbm_sigs_garofano <- read_excel('../../../results/2025-06-06_single_cell_scores/Garofano_et_al_Tables.xlsx', sheet = 'Tab 26 - Supplementary Table 6j', skip = 2)
-gbm_sigs_nomura <- read_excel('../../../results/2025-06-06_single_cell_scores/Nomura_et_al_Tables.xlsx', sheet = 'TableS2', skip = 4)
-gbm_sigs_couturier <- read_csv('../../../results/2025-06-06_single_cell_scores/Couturier_et_al_signatures.csv')
+gbm_sigs_neftel <- read_excel('../data/Neftel_et_al_signatures.xlsx', skip = 4)
+gbm_sigs_garofano <- read_excel('../data/Garofano_et_al_signatures.xlsx', sheet = 'Tab 26 - Supplementary Table 6j', skip = 2)
+gbm_sigs_nomura <- read_excel('../data/Nomura_et_al_signatures.xlsx', sheet = 'TableS2', skip = 4)
+gbm_sigs_couturier <- read_csv('../data/Couturier_et_al_signatures.csv')
 
 head(tpm)
 head(gbm_sigs_neftel)

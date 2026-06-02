@@ -6,9 +6,9 @@ editor: visual
 
 Run this notebook to generate
 
-* Figure 2f, 2g, 2h, 2k
+* Figure 5a, 5c, 5d, 5e, 5f; Figure 6a; Extended Data Figure 8f
 
-* Extended Data Figure 7a, 7b, 7c
+* Extended Data Figure 7a, 7b, 7c, 7d, 7e
 
 This script analyzes single-nucleus RNA-seq (snRNA-seq) data from the ICB cohort to characterize malignant cell states and the tumor microenvironment (TME), and to associate tumor cellular composition with ICB outcomes.
 
@@ -46,7 +46,7 @@ library(coxphf)
 metadata_ICB <- readRDS(file = "../data/metadata_ICB.rds")
 metadata_ICB %>% dim() # 666948  15
 
-project_metadata <- readRDS(file = "../data/Single cell portal/project_metadata_ICB.rds")
+project_metadata <- readRDS(file = "../data/project_metadata_ICB.rds")
 
 pseudobulk_pre_path <- "../data/pseudobulks_by_sample_cell_type_pre_TPM.rds"
 pseudobulks_pre_tpm <- readRDS(pseudobulk_pre_path)
@@ -152,11 +152,11 @@ CELL_TYPE_NK_CELL_C <- "#9d94ff"
 
 ```
 
-# Figure 2f
+# Figure 5a
 
 Generate a UMAP representation of all high-quality cells
 
-```{r Fig.2f-single-nucleus-dataset-umap}
+```{r Fig.5a-single-nucleus-dataset-umap}
 
 # set UMAP legend arrows dimensions
 UMAP_AXES_DATA <- list(x = -20, y = -20, x_len = 4, y_len = 4)
@@ -179,11 +179,11 @@ metadata_ICB %>%
 
 ```
 
-# Figure 2g
+# Figure 5c
 
 Compare the fraction of the malignant cell-states between long-term and short-term survivors
 
-```{r Fig.2g-fraction-of-malignant-states-by-survival}
+```{r Fig.5c-fraction-of-malignant-states-by-survival}
 
 # Filter-out samples with low number of cells to prevent bias
 MIN_SAMPLE_SIZE <- 100
@@ -259,11 +259,118 @@ malignant_fraction_by_patient_pre_summary %>%
 
 ```
 
-# Figure 2h
+# Figure 5d
+
+Cox regression of malignant cell-state proportions against overall survival, adjusted for newly-diagnosed/recurrent and MGMT status.
+
+```{r Fig.5d-malignant-cell-state-survival-forest}
+
+final_metadata_df <- metadata_ICB %>%
+  mutate(Patient_ID = as.character(Patient_ID), Sample_ID = as.character(Sample_ID), Cell_type = as.character(Cell_type)) %>%
+  left_join(
+    project_metadata %>% transmute(
+      Patient_ID = as.character(Patient_ID),
+      osicb = OS_ICB,
+      Deceased = as.character(Deceased),
+      `ICB for Newly diagnosed` = as.character(ICB.for.Newly.diagnosed),
+      `MGMT methylated Y/N` = as.character(MGMT_methylated)
+    ),
+    by = "Patient_ID"
+  )
+
+CELL_TYPES <- c("MES-like", "GPC-like", "AC-like", "NPC-like", "OPC-like")
+PATIENTS_TO_EXCLUDE <- c("28", "182")
+
+filtered_data <- final_metadata_df %>%
+  filter(!Patient_ID %in% PATIENTS_TO_EXCLUDE) %>%
+  filter(grepl("_Pre", Sample_ID, fixed = TRUE)) %>%
+  filter(Cell_type %in% CELL_TYPES) %>%
+  filter(!is.na(osicb) & !is.na(Deceased))
+samples_above_threshold <- filtered_data %>%
+  count(Sample_ID, Patient_ID) %>% filter(n > 100) %>% pull(Sample_ID)
+filtered_data_100 <- filtered_data %>% filter(Sample_ID %in% samples_above_threshold)
+sample_proportions <- filtered_data_100 %>%
+  group_by(Sample_ID, Patient_ID, Cell_type) %>% summarise(cell_count = n(), .groups = "drop") %>%
+  group_by(Sample_ID, Patient_ID) %>% mutate(proportion = cell_count / sum(cell_count)) %>% ungroup()
+sample_info <- filtered_data_100 %>% distinct(Sample_ID, Patient_ID)
+patient_proportions_wide <- expand.grid(Sample_ID = unique(sample_info$Sample_ID), Cell_type = CELL_TYPES, stringsAsFactors = FALSE) %>%
+  left_join(sample_info, by = "Sample_ID") %>%
+  left_join(select(sample_proportions, Sample_ID, Cell_type, proportion), by = c("Sample_ID", "Cell_type")) %>%
+  mutate(proportion = ifelse(is.na(proportion), 0, proportion)) %>%
+  group_by(Patient_ID, Cell_type) %>% summarise(mean_proportion = mean(proportion), .groups = "drop") %>%
+  pivot_wider(names_from = Cell_type, values_from = mean_proportion, values_fill = 0)
+patient_analysis_df <- final_metadata_df %>%
+  distinct(Patient_ID, osicb, Deceased, `ICB for Newly diagnosed`, `MGMT methylated Y/N`) %>%
+  filter(Patient_ID %in% patient_proportions_wide$Patient_ID) %>%
+  mutate(
+    status = ifelse(Deceased == "Deceased", 1, 0),
+    nd_status = factor(`ICB for Newly diagnosed`, levels = c("Recurrent", "Newly-diagnosed")),
+    mgmt_status = factor(case_when(
+      `MGMT methylated Y/N` %in% c("Methylated", "Partially") ~ "Methylated/Partially",
+      `MGMT methylated Y/N` == "Unmethylated" ~ "Unmethylated", TRUE ~ NA_character_),
+      levels = c("Unmethylated", "Methylated/Partially"))
+  ) %>%
+  inner_join(patient_proportions_wide, by = "Patient_ID")
+for (col in CELL_TYPES) {
+  patient_analysis_df[[paste0(col, "_std")]] <-
+    (patient_analysis_df[[col]] - mean(patient_analysis_df[[col]], na.rm = TRUE)) / sd(patient_analysis_df[[col]], na.rm = TRUE)
+}
+
+model_results_df <- bind_rows(lapply(CELL_TYPES, function(ct) {
+  model <- coxph(as.formula(sprintf("Surv(osicb, status) ~ `%s_std` + nd_status + mgmt_status", ct)), data = patient_analysis_df)
+  s <- summary(model); ci <- exp(confint(model))
+  data.frame(term = ct, hr = s$coefficients[1, "exp(coef)"], conf.low = ci[1, 1], conf.high = ci[1, 2],
+             p.value = s$coefficients[1, "Pr(>|z|)"], n = model$n)
+}))
+
+LOWER_CAPPING_LIMIT <- 0.15; UPPER_CAPPING_LIMIT <- 5.0
+plot_data <- model_results_df %>%
+  mutate(across(c(hr, conf.low, conf.high), ~if_else(is.finite(.x), .x, NA_real_))) %>%
+  mutate(
+    hr_ci_str = if_else(is.na(hr), "Not Calculable", sprintf("%.2f (%.2f–%.2f)", hr, conf.low, conf.high)),
+    p_val_str = if_else(is.na(p.value), "N/A", scales::pvalue(p.value, accuracy = 0.001, add_p = TRUE)),
+    term = factor(term, levels = c("OPC-like", "NPC-like", "AC-like", "GPC-like", "MES-like")),
+    is_capped_low = !is.na(conf.low) & conf.low < LOWER_CAPPING_LIMIT,
+    is_capped_high = !is.na(conf.high) & conf.high > UPPER_CAPPING_LIMIT,
+    conf.low_plot = pmax(conf.low, LOWER_CAPPING_LIMIT, na.rm = TRUE),
+    conf.high_plot = pmin(conf.high, UPPER_CAPPING_LIMIT, na.rm = TRUE),
+    hr_plot = pmax(pmin(hr, UPPER_CAPPING_LIMIT, na.rm = TRUE), LOWER_CAPPING_LIMIT, na.rm = TRUE)
+  )
+
+p_table <- ggplot(plot_data, aes(y = term)) +
+  geom_text(aes(x = 0, label = n), hjust = 0.5, size = 4) +
+  geom_text(aes(x = 1, label = hr_ci_str), hjust = 0.5, size = 4) +
+  geom_text(aes(x = 2, label = p_val_str), hjust = 0.5, size = 4) +
+  annotate("text", x = 0, y = nlevels(plot_data$term) + 0.7, label = "N", fontface = "bold", size = 4.5) +
+  annotate("text", x = 1, y = nlevels(plot_data$term) + 0.7, label = "HR (95% CI)", fontface = "bold", size = 4.5) +
+  annotate("text", x = 2, y = nlevels(plot_data$term) + 0.7, label = "P-value", fontface = "bold", size = 4.5) +
+  theme_void() + scale_y_discrete(limits = rev, expand = expansion(add = c(0.6, 1.2))) + xlim(-0.5, 2.5)
+p_forest <- ggplot(plot_data, aes(y = term)) +
+  geom_vline(xintercept = 1.0, linetype = "dashed", color = "grey70", linewidth = 0.8) +
+  geom_errorbarh(aes(xmin = conf.low_plot, xmax = conf.high_plot), height = 0.25, linewidth = 1.0) +
+  geom_segment(data = . %>% filter(is_capped_low), aes(x = conf.low_plot, xend = conf.low_plot, y = term, yend = term),
+               arrow = grid::arrow(length = unit(0.2, "cm"), type = "open", ends = "first"), linewidth = 1.0) +
+  geom_segment(data = . %>% filter(is_capped_high), aes(x = conf.high_plot, xend = conf.high_plot, y = term, yend = term),
+               arrow = grid::arrow(length = unit(0.2, "cm"), type = "open", ends = "last"), linewidth = 1.0) +
+  geom_point(aes(x = hr_plot), size = 4, shape = 21, fill = "firebrick", color = "black") +
+  scale_x_log10(breaks = c(0.1, 0.2, 0.5, 1.0, 2.0, 5.0), labels = scales::label_number(accuracy = 0.1)) +
+  coord_cartesian(xlim = c(LOWER_CAPPING_LIMIT, UPPER_CAPPING_LIMIT)) +
+  scale_y_discrete(limits = rev) +
+  labs(x = "Hazard Ratio (HR) per SD Increase (log scale)", y = "") +
+  theme_minimal(base_size = 14) +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor.x = element_line(color = "grey92", linetype = "dashed"),
+        axis.title.x = element_text(margin = margin(t = 10)))
+print(p_forest + p_table + plot_layout(widths = c(2.5, 2)) +
+  plot_annotation(title = "Survival Analysis of Malignant Cell State Proportions",
+    subtitle = sprintf("Cox models (coxph) adjusted for ND/R & MGMT status | n=%d patients", nrow(patient_analysis_df)),
+    caption = "Patients 28 & 182 excluded | Pre-ICB samples only | HR per SD increase in proportion"))
+```
+
+# Figure 5e
 
 Compare the fraction of the non-malignant (TME) cell-types between long-term and short-term survivors
 
-```{r Fig.2h-fraction-of-TME-cell-types-by-survival}
+```{r Fig.5e-fraction-of-TME-cell-types-by-survival}
 
 # Filter-out samples with low number of cells to prevent bias
 MIN_SAMPLE_SIZE <- 100
@@ -336,11 +443,118 @@ non_malignant_fraction_by_patient_pre_summary %>%
 
 ```
 
-# Figure 2k
+# Figure 5f
+
+Cox regression of TME cell-type proportions against overall survival, adjusted for newly-diagnosed/recurrent and MGMT status.
+
+```{r Fig.5f-TME-cell-type-survival-forest}
+
+final_metadata_df <- metadata_ICB %>%
+  mutate(Patient_ID = as.character(Patient_ID), Sample_ID = as.character(Sample_ID), Cell_type = as.character(Cell_type)) %>%
+  left_join(
+    project_metadata %>% transmute(
+      Patient_ID = as.character(Patient_ID),
+      osicb = OS_ICB,
+      Deceased = as.character(Deceased),
+      `ICB for Newly diagnosed` = as.character(ICB.for.Newly.diagnosed),
+      `MGMT methylated Y/N` = as.character(MGMT_methylated)
+    ),
+    by = "Patient_ID"
+  )
+
+CELL_TYPES <- c("Pericytes", "Oligodendrocytes", "Endothelial", "Myeloid", "Neurons", "Astrocyte", "T-cell", "NK-cell")
+PATIENTS_TO_EXCLUDE <- c("28", "182")
+
+filtered_data <- final_metadata_df %>%
+  filter(!Patient_ID %in% PATIENTS_TO_EXCLUDE) %>%
+  filter(grepl("_Pre", Sample_ID, fixed = TRUE)) %>%
+  filter(Cell_type %in% CELL_TYPES) %>%
+  filter(!is.na(osicb) & !is.na(Deceased))
+samples_above_threshold <- filtered_data %>%
+  count(Sample_ID, Patient_ID) %>% filter(n > 100) %>% pull(Sample_ID)
+filtered_data_100 <- filtered_data %>% filter(Sample_ID %in% samples_above_threshold)
+sample_proportions <- filtered_data_100 %>%
+  group_by(Sample_ID, Patient_ID, Cell_type) %>% summarise(cell_count = n(), .groups = "drop") %>%
+  group_by(Sample_ID, Patient_ID) %>% mutate(proportion = cell_count / sum(cell_count)) %>% ungroup()
+sample_info <- filtered_data_100 %>% distinct(Sample_ID, Patient_ID)
+patient_proportions_wide <- expand.grid(Sample_ID = unique(sample_info$Sample_ID), Cell_type = CELL_TYPES, stringsAsFactors = FALSE) %>%
+  left_join(sample_info, by = "Sample_ID") %>%
+  left_join(select(sample_proportions, Sample_ID, Cell_type, proportion), by = c("Sample_ID", "Cell_type")) %>%
+  mutate(proportion = ifelse(is.na(proportion), 0, proportion)) %>%
+  group_by(Patient_ID, Cell_type) %>% summarise(mean_proportion = mean(proportion), .groups = "drop") %>%
+  pivot_wider(names_from = Cell_type, values_from = mean_proportion, values_fill = 0)
+patient_analysis_df <- final_metadata_df %>%
+  distinct(Patient_ID, osicb, Deceased, `ICB for Newly diagnosed`, `MGMT methylated Y/N`) %>%
+  filter(Patient_ID %in% patient_proportions_wide$Patient_ID) %>%
+  mutate(
+    status = ifelse(Deceased == "Deceased", 1, 0),
+    nd_status = factor(`ICB for Newly diagnosed`, levels = c("Recurrent", "Newly-diagnosed")),
+    mgmt_status = factor(case_when(
+      `MGMT methylated Y/N` %in% c("Methylated", "Partially") ~ "Methylated/Partially",
+      `MGMT methylated Y/N` == "Unmethylated" ~ "Unmethylated", TRUE ~ NA_character_),
+      levels = c("Unmethylated", "Methylated/Partially"))
+  ) %>%
+  inner_join(patient_proportions_wide, by = "Patient_ID")
+for (col in CELL_TYPES) {
+  patient_analysis_df[[paste0(col, "_std")]] <-
+    (patient_analysis_df[[col]] - mean(patient_analysis_df[[col]], na.rm = TRUE)) / sd(patient_analysis_df[[col]], na.rm = TRUE)
+}
+
+model_results_df <- bind_rows(lapply(CELL_TYPES, function(ct) {
+  model <- coxph(as.formula(sprintf("Surv(osicb, status) ~ `%s_std` + nd_status + mgmt_status", ct)), data = patient_analysis_df)
+  s <- summary(model); ci <- exp(confint(model))
+  data.frame(term = ct, hr = s$coefficients[1, "exp(coef)"], conf.low = ci[1, 1], conf.high = ci[1, 2],
+             p.value = s$coefficients[1, "Pr(>|z|)"], n = model$n)
+}))
+
+LOWER_CAPPING_LIMIT <- 0.05; UPPER_CAPPING_LIMIT <- 10.2
+plot_data <- model_results_df %>%
+  mutate(across(c(hr, conf.low, conf.high), ~if_else(is.finite(.x), .x, NA_real_))) %>%
+  mutate(
+    hr_ci_str = if_else(is.na(hr), "Not Calculable", sprintf("%.2f (%.2f–%.2f)", hr, conf.low, conf.high)),
+    p_val_str = if_else(is.na(p.value), "N/A", scales::pvalue(p.value, accuracy = 0.001, add_p = TRUE)),
+    term = forcats::fct_reorder(term, hr),
+    is_capped_low = !is.na(conf.low) & conf.low < LOWER_CAPPING_LIMIT,
+    is_capped_high = !is.na(conf.high) & conf.high > UPPER_CAPPING_LIMIT,
+    conf.low_plot = pmax(conf.low, LOWER_CAPPING_LIMIT, na.rm = TRUE),
+    conf.high_plot = pmin(conf.high, UPPER_CAPPING_LIMIT, na.rm = TRUE),
+    hr_plot = pmax(pmin(hr, UPPER_CAPPING_LIMIT, na.rm = TRUE), LOWER_CAPPING_LIMIT, na.rm = TRUE)
+  )
+
+p_table <- ggplot(plot_data, aes(y = term)) +
+  geom_text(aes(x = 0, label = n), hjust = 0.5, size = 4) +
+  geom_text(aes(x = 1, label = hr_ci_str), hjust = 0.5, size = 4) +
+  geom_text(aes(x = 2, label = p_val_str), hjust = 0.5, size = 4) +
+  annotate("text", x = 0, y = nlevels(plot_data$term) + 0.7, label = "N", fontface = "bold", size = 4.5) +
+  annotate("text", x = 1, y = nlevels(plot_data$term) + 0.7, label = "HR (95% CI)", fontface = "bold", size = 4.5) +
+  annotate("text", x = 2, y = nlevels(plot_data$term) + 0.7, label = "P-value", fontface = "bold", size = 4.5) +
+  theme_void() + scale_y_discrete(limits = rev, expand = expansion(add = c(0.6, 1.2))) + xlim(-0.5, 2.5)
+p_forest <- ggplot(plot_data, aes(y = term)) +
+  geom_vline(xintercept = 1.0, linetype = "dashed", color = "grey70", linewidth = 0.8) +
+  geom_errorbarh(aes(xmin = conf.low_plot, xmax = conf.high_plot), height = 0.25, linewidth = 1.0) +
+  geom_segment(data = . %>% filter(is_capped_low), aes(x = conf.low_plot, xend = conf.low_plot, y = term, yend = term),
+               arrow = grid::arrow(length = unit(0.2, "cm"), type = "open", ends = "first"), linewidth = 1.0) +
+  geom_segment(data = . %>% filter(is_capped_high), aes(x = conf.high_plot, xend = conf.high_plot, y = term, yend = term),
+               arrow = grid::arrow(length = unit(0.2, "cm"), type = "open", ends = "last"), linewidth = 1.0) +
+  geom_point(aes(x = hr_plot), size = 4, shape = 21, fill = "royalblue", color = "black") +
+  scale_x_log10(breaks = c(0.1, 0.2, 0.5, 1.0, 2.0, 5.0), labels = scales::label_number(accuracy = 0.1)) +
+  coord_cartesian(xlim = c(LOWER_CAPPING_LIMIT, UPPER_CAPPING_LIMIT)) +
+  scale_y_discrete(limits = rev) +
+  labs(x = "Hazard Ratio (HR) per SD Increase (log scale)", y = "") +
+  theme_minimal(base_size = 14) +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor.x = element_line(color = "grey92", linetype = "dashed"),
+        axis.title.x = element_text(margin = margin(t = 10)))
+print(p_forest + p_table + plot_layout(widths = c(2.5, 2)) +
+  plot_annotation(title = "Survival Analysis of TME (Non-Malignant) Cell Fractions",
+    subtitle = sprintf("Cox models (coxph) adjusted for ND/R & MGMT status | n=%d patients", nrow(patient_analysis_df)),
+    caption = "Patients 28 & 182 excluded | Pre-ICB samples only | HR per SD increase in proportion"))
+```
+
+# Figure 6a and Extended Data Fig. 8f
 
 Fish plot describing the changes in malignant cell-states and TME cell types fractions following ICB treatment
 
-```{r Fig.2k-cell-types-re-distribution-by-ICB-treatment}
+```{r Fig.6a-cell-types-re-distribution-by-ICB-treatment}
 
 # PAIRED FISH PLOTS GROUPED BY MES-LIKE FRACTION CHANGES
 
@@ -1156,4 +1370,131 @@ cell_type_fraction_by_patient_summary %>%
         legend.key.spacing.y = unit(10,"pt"),
         axis.text.x = element_text(size = 14))
 
+```
+
+# Extended Data Figure 7d
+
+Kaplan-Meier survival for patients split at the median MES-like (NMF) malignant cell proportion.
+
+```{r Ex.Fig.7d-survival-by-MES-like-NMF-median-split}
+
+library(survminer)
+
+final_metadata_df <- metadata_ICB %>%
+  mutate(Patient_ID = as.character(Patient_ID), Sample_ID = as.character(Sample_ID), Cell_type = as.character(Cell_type)) %>%
+  left_join(
+    project_metadata %>% transmute(
+      Patient_ID = as.character(Patient_ID),
+      osicb = OS_ICB,
+      Deceased = as.character(Deceased),
+      `ICB for Newly diagnosed` = as.character(ICB.for.Newly.diagnosed),
+      `MGMT methylated Y/N` = as.character(MGMT_methylated)
+    ),
+    by = "Patient_ID"
+  )
+
+MALIGNANT_CELL_TYPES <- c("MES-like", "GPC-like", "AC-like", "NPC-like", "OPC-like")
+PATIENTS_TO_EXCLUDE <- c("28", "182")
+
+filtered_data_100 <- final_metadata_df %>%
+  filter(!Patient_ID %in% PATIENTS_TO_EXCLUDE) %>%
+  filter(grepl("_Pre", Sample_ID, fixed = TRUE)) %>%
+  filter(Cell_type %in% MALIGNANT_CELL_TYPES) %>%
+  filter(!is.na(osicb) & !is.na(Deceased)) %>%
+  group_by(Sample_ID) %>% filter(n() > 100) %>% ungroup()
+sample_info <- filtered_data_100 %>% distinct(Sample_ID, Patient_ID)
+sample_proportions <- filtered_data_100 %>%
+  group_by(Sample_ID, Patient_ID, Cell_type) %>% summarise(cell_count = n(), .groups = "drop") %>%
+  group_by(Sample_ID, Patient_ID) %>% mutate(proportion = cell_count / sum(cell_count)) %>% ungroup()
+patient_mes <- expand.grid(Sample_ID = unique(sample_info$Sample_ID), Cell_type = MALIGNANT_CELL_TYPES, stringsAsFactors = FALSE) %>%
+  left_join(sample_info, by = "Sample_ID") %>%
+  left_join(select(sample_proportions, Sample_ID, Cell_type, proportion), by = c("Sample_ID", "Cell_type")) %>%
+  mutate(proportion = ifelse(is.na(proportion), 0, proportion)) %>%
+  group_by(Patient_ID, Cell_type) %>% summarise(mean_proportion = mean(proportion), .groups = "drop") %>%
+  filter(Cell_type == "MES-like") %>% select(Patient_ID, mes_proportion = mean_proportion)
+
+median_mes <- median(patient_mes$mes_proportion)
+survival_analysis_df <- patient_mes %>%
+  mutate(mes_group = factor(ifelse(mes_proportion > median_mes, "MES High", "MES Low"), levels = c("MES Low", "MES High"))) %>%
+  inner_join(final_metadata_df %>% distinct(Patient_ID, osicb, Deceased) %>% filter(!is.na(osicb)), by = "Patient_ID") %>%
+  mutate(Deceased_numeric = ifelse(Deceased == "Deceased", 1, 0), osicb_years = osicb / 365.25)
+
+surv_fit <- survfit(Surv(osicb_years, Deceased_numeric) ~ mes_group, data = survival_analysis_df)
+print(ggsurvplot(
+  surv_fit, data = survival_analysis_df, pval = TRUE, risk.table = FALSE, conf.int = FALSE,
+  palette = c("MES Low" = "#4E84C4", "MES High" = "#BF1E2E"),
+  xlab = "Years", ylab = "Overall survival probability", legend.title = "Median Split Group",
+  legend.labs = c("MES Low", "MES High"), break.time.by = 1,
+  xlim = c(0, ceiling(max(survival_analysis_df$osicb_years, na.rm = TRUE))),
+  title = "Survival by MES Proportion (NMF States)", subtitle = "Pre-ICB | Median Split",
+  ggtheme = theme_minimal(base_size = 14) +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+          axis.line = element_line(colour = "black"), legend.position = "top")
+))
+```
+
+# Extended Data Figure 7e
+
+Kaplan-Meier survival for patients split at the median MES-equivalent proportion across four single-cell classifiers (Neftel, Nomura, Garofano, Couturier).
+
+```{r Ex.Fig.7e-survival-by-external-classifier-MES-median-split}
+
+library(survminer)
+
+classifier_metadata <- readRDS("../data/metadata_malignant_thresholds.rds") %>%
+  mutate(Patient_ID = as.character(Patient_ID), Sample_ID = as.character(Sample_ID)) %>%
+  left_join(project_metadata %>% transmute(Patient_ID = as.character(Patient_ID), osicb = OS_ICB, Deceased = as.character(Deceased)),
+            by = "Patient_ID")
+
+MALIGNANT_CELL_TYPES <- c("MES-like", "GPC-like", "AC-like", "NPC-like", "OPC-like")
+PATIENTS_TO_EXCLUDE <- c("28", "182")
+
+classifier_km <- function(data, classifier_col, target_states, label) {
+  filt <- data %>%
+    filter(!Patient_ID %in% PATIENTS_TO_EXCLUDE) %>%
+    filter(grepl("_Pre", Sample_ID, fixed = TRUE)) %>%
+    filter(gbm_state_NMF %in% MALIGNANT_CELL_TYPES) %>%
+    filter(!is.na(!!sym(classifier_col))) %>%
+    filter(!is.na(osicb) & !is.na(Deceased))
+  samps <- filt %>% group_by(Sample_ID, Patient_ID) %>% summarise(total_malignant_cells = n(), .groups = "drop") %>%
+    filter(total_malignant_cells > 100) %>% pull(Sample_ID)
+  filt <- filt %>% filter(Sample_ID %in% samps)
+  sample_props <- filt %>% count(Sample_ID, Patient_ID, !!sym(classifier_col), name = "cell_count") %>%
+    group_by(Sample_ID, Patient_ID) %>% mutate(proportion = cell_count / sum(cell_count)) %>% ungroup()
+  all_samps <- unique(sample_props[c("Sample_ID", "Patient_ID")])
+  all_states <- unique(sample_props[[classifier_col]])
+  grid <- expand.grid(Sample_ID = unique(all_samps$Sample_ID), state = all_states, stringsAsFactors = FALSE)
+  names(grid)[2] <- classifier_col
+  grid <- grid %>% left_join(all_samps, by = "Sample_ID") %>%
+    left_join(sample_props[c("Sample_ID", classifier_col, "proportion")], by = c("Sample_ID", classifier_col)) %>%
+    mutate(proportion = ifelse(is.na(proportion), 0, proportion))
+  patient_props <- grid %>% group_by(Patient_ID, !!sym(classifier_col)) %>%
+    summarise(mean_proportion = mean(proportion), .groups = "drop") %>%
+    pivot_wider(names_from = !!sym(classifier_col), values_from = mean_proportion, values_fill = 0)
+  target_in_data <- intersect(target_states, names(patient_props))
+  patient_target <- patient_props %>% mutate(target_proportion = rowSums(select(., all_of(target_in_data)), na.rm = TRUE)) %>%
+    select(Patient_ID, target_proportion)
+  med <- median(patient_target$target_proportion)
+  surv <- data %>% distinct(Patient_ID, osicb, Deceased) %>% filter(!is.na(osicb))
+  surv_df <- patient_target %>%
+    mutate(group = factor(ifelse(target_proportion > med, "MES-like high", "MES-like low"), levels = c("MES-like low", "MES-like high"))) %>%
+    inner_join(surv, by = "Patient_ID") %>%
+    mutate(event = ifelse(Deceased == "Deceased", 1, 0), osicb_years = osicb / 365.25)
+  fit <- survfit(Surv(osicb_years, event) ~ group, data = surv_df)
+  ggsurvplot(fit, data = surv_df, pval = TRUE, risk.table = FALSE, conf.int = FALSE,
+             palette = c("#4E84C4", "#BF1E2E"), xlab = "Years", ylab = "Overall survival probability",
+             legend.title = "", legend.labs = c("MES-like low", "MES-like high"), break.time.by = 1,
+             title = label,
+             ggtheme = theme_minimal(base_size = 12) +
+               theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                     axis.line = element_line(colour = "black"), legend.position = "top"))
+}
+
+km_list <- list(
+  classifier_km(classifier_metadata, "gbm_state_Neftel",    c("MES1", "MES2"), "Neftel"),
+  classifier_km(classifier_metadata, "gbm_state_Spitzer",   c("MP_6_MES"),     "Nomura"),
+  classifier_km(classifier_metadata, "gbm_state_Garofano",  c("GPM"),          "Garofano"),
+  classifier_km(classifier_metadata, "gbm_state_Couturier", c("mes1", "mes2"), "Couturier")
+)
+arrange_ggsurvplots(km_list, ncol = 2, nrow = 2)
 ```

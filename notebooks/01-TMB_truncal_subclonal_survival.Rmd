@@ -4,8 +4,8 @@ output: html_notebook
 ---
 
 Run this notebook to generate
-* Figure 1f
-* Extended Data Figure 1c,f-i
+* Figure 2d
+* Extended Data Figure 1c, 1f, 1g
 
 This notebook tests associations of pre-ICB TMB with overall survival from ICB start.
 - OncoPanel data: assay-reported non-syn TMB
@@ -29,7 +29,8 @@ oncopanel_tmb_sheet <- read_delim('../data/oncopanel_sample_sheet.tsv',
 
 oncopanel_sample_dict <- read_excel('../data/oncopanel_clinical.xlsx') %>% 
   filter(!is.na(id_broad_sample)) %>% 
-  select(id_uniquesample, id_broad_sample)
+  select(id_uniquesample, id_broad_sample) %>%
+  mutate(id_uniquesample = as.character(id_uniquesample))
 
 broad_participant_sheet <- read_delim('../data/participant_cohort_sheet.tsv',
                             show_col_types = FALSE)

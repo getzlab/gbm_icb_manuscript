@@ -5,11 +5,11 @@ output: html_document
 
 Run this notebook to generate
 
--   Figure 2c
+-   Figure 4e
 
 -   Extended Data Figure 5a-j
 
--   Extended Data Figure 8b (right) and 8d (right)
+-   Extended Data Figure 8c (right) and 8d (right)
 
 This script analyzes HLA Class I/II protein expression and T-cell density, examining their associations with Verhaak transcriptional subtypes.
 
@@ -158,7 +158,7 @@ create_score_scatter <- function(data, x_var, y_var, x_label, y_label, title, su
 }
 ```
 
-# Figure 2c
+# Figure 4e
 
 Compares the percentage of HLA class I-high malignant (SOX2 High) cells across the four Verhaak subtypes.
 
@@ -452,7 +452,7 @@ if(!is.null(p_5j_left) & !is.null(p_5j_right)) {
 }
 ```
 
-# Extended Data Fig. 8b (right)
+# Extended Data Fig. 8c (right)
 
 Calculate fraction of HLA class II signal from malignant cells.
 

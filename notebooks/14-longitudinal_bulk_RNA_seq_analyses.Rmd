@@ -5,11 +5,11 @@ output: html_document
 
 Run this notebook to generate
 
--   Figure 2l, 2m
+-   Figure 6b, 6c, 6d, 6e, 6f, 6g, 6h
 
--   Extended Data Figure 9a, 9b, 9c, 9d, 9e, 9f, 9g, 9h
+-   Extended Data Figure 9a, 9b, 9c
 
--   Extended Data Figure 10c
+-   Extended Data Figure 10b
 
 This script analyzes transcriptional subtype transitions (pre- vs. post-therapy) and their association with survival in the ICB and GLASS cohorts.
 
@@ -24,12 +24,12 @@ This script analyzes transcriptional subtype transitions (pre- vs. post-therapy)
 # Load data
 
 ```{r}
+library(mclust)
 library(tidyverse)
 library(survival)
 library(survminer)
 library(RColorBrewer)
 library(ggalluvial)
-library(mclust)
 library(broom)
 library(patchwork)
 library(readxl)
@@ -41,7 +41,7 @@ zenodo_dir_path <- "../data/bulk_transcriptional_classifiers"
 icb_data_raw <- read_tsv(file.path(zenodo_dir_path, "icb_cohort_unified.tsv"), show_col_types = FALSE)
 glass_data_raw <- read_tsv(file.path(zenodo_dir_path, "glass_cohort_clinical_subtypes.tsv"), show_col_types = FALSE)
 sc_scores <- read_tsv(file.path(zenodo_dir_path, "sc_classifier_scores.tsv"), show_col_types = FALSE)
-verhaak_scores <- read_excel(file.path(zenodo_dir_path, "bulk_verhaak_ssgsea_scores.xlsx"), skip = 1)
+verhaak_scores <- read_excel("../data/icb_ssgsea_verhaak.xlsx", skip = 1)
 ```
 
 # Data pre-processing
@@ -64,7 +64,7 @@ colors_alluvial <- c("MES to non-MES" = "#FC9A99",
                      "non-MES to MES" = "#A5CEE3",
                      "non-MES to non-MES" = "#4E84C4")
 
-#Object 1: ICB Transition Data (Fig 2l/m, ExtDataFig 9a, 9d)
+#Object 1: ICB Transition Data (Fig 6b/c, ExtDataFig 9a, Fig 6d)
 transition_data_verhaak_icb <- icb_data_raw %>%
   filter(!is.na(verhaak_subtype_pre) & !is.na(verhaak_subtype_post)) %>%
   mutate(
@@ -114,7 +114,7 @@ verhaak_plotdata_9b <- verhaak_long_adjusted_9b %>%
   mutate(score_percentage = score / sum(score, na.rm=TRUE) * 100) %>%
   ungroup()
 
-#Object 3: GLASS Transition Data (Fig 2l/m, ExtDataFig 9a, 9c, 9d)
+#Object 3: GLASS Transition Data (Fig 6b/c, ExtDataFig 9a, 9c, Fig 6d)
 glass_patient_data <- glass_data_raw %>%
   filter(primary_or_recurrent == "primary") %>%
   select(
@@ -164,7 +164,7 @@ transition_data_glass <- glass_patient_data %>%
   ) %>%
   filter(!is.na(os_days) & !is.na(status_logical))
 
-#Object 4: ICB Survival Data (ExtDataFig 9e/f)
+#Object 4: ICB Survival Data (Fig 6e/f)
 verhaak_plotdata_icb_long <- icb_data_raw %>%
   select(participant_id, starts_with("VERHAAK_GLIOBLASTOMA_")) %>%
   pivot_longer(
@@ -228,7 +228,7 @@ analysis_data_icb_9e <- ratio_change_icb_9e %>%
 correlation_data_icb_9e <- analysis_data_icb_9e %>%
   mutate(log2_fold_change = log2(fold_change))
 
-#Object 5: GLASS Survival Data (ExtDataFig 9g/h)
+#Object 5: GLASS Survival Data (Fig 6g/h)
 verhaak_long_raw_glass_9g <- glass_data_raw %>%
   filter(primary_or_recurrent %in% c("primary", "recurrent")) %>%
   select(case_barcode, primary_or_recurrent, starts_with("VERHAAK_GLIOBLASTOMA_")) %>% 
@@ -286,7 +286,7 @@ analysis_data_glass_9g <- ratio_change_glass_9g %>%
 correlation_data_glass_9g <- analysis_data_glass_9g %>%
   mutate(log2_fold_change = log2(fold_change))
 
-#Object 6: Neftel MES1 vs MES2 Survival (ExtDataFig 10c)
+#Object 6: Neftel MES1 vs MES2 Survival (ExtDataFig 10b)
 df_10c <- icb_data_raw %>%
   filter(Neftel_dominant_pre %in% c("MES1", "MES2")) %>%
   mutate(
@@ -297,7 +297,7 @@ df_10c <- icb_data_raw %>%
   filter(!is.na(osicb_years), !is.na(event_status))
 ```
 
-# Figure 2l & 2m
+# Figure 6b and 6c
 
 Creates transition barplots (LTS vs STS) and stable subtype survival curves for ICB and GLASS cohorts.
 
@@ -815,7 +815,7 @@ if(nrow(df_stable_couturier) > 0) {
 }
 ```
 
-# Extended Data Fig. 9d
+# Figure 6d
 
 Comparison of non-MES transition and MES stability in pre-treatment MES tumors between LTS/STS groups in ICB and GLASS cohorts.
 
@@ -920,7 +920,7 @@ if (nrow(lts_table_9d) == 2 && all(c("ICB", "GLASS") %in% lts_table_9d$cohort) &
 }
 ```
 
-# Extended Data Fig. 9e and f
+# Figure 6e and 6f
 
 Correlation and stacked bar plot of MES/PN ratio change and survival in pre-ICB MES tumors in ICB cohort.
 
@@ -1048,7 +1048,7 @@ if (nrow(correlation_data_icb_9e) >= 3) {
 }
 ```
 
-# Extended Data Fig. 9g and h
+# Figure 6g and 6h
 
 Correlation and stacked bar plot of MES/PN ratio change and survival in pre-treatment MES tumors in GLASS cohort.
 
@@ -1173,7 +1173,7 @@ if (nrow(correlation_data_glass_9g) >= 3) {
 }
 ```
 
-# Extended Data Fig. 10c
+# Extended Data Fig. 10b
 
 Kaplan-Meier survival curve for ICB cohort patients stratified by Neftel MES1 vs. MES2 status.
 

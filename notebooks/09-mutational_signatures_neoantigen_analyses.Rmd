@@ -5,21 +5,21 @@ output: html_document
 
 Run this R script to generate:
 
--   Extended Data Figure 1a
+-   Figure 2e
 
--   Extended Data Figure 1b
+-   Extended Data Figure 2a
 
--   Extended Data Figure 1c
+-   Extended Data Figure 2b
 
--   Extended Data Figure 1d
+-   Extended Data Figure 2c
 
--   Extended Data Figure 1f
+-   Extended Data Figure 2d, 2e
 
--   Extended Data Figure 1g
+-   Extended Data Figure 2f
 
--   Extended Data Figure 1h-k
+-   Figure 2f and Extended Data Figure 2g-i
 
--   Extended Data Figure 1l-q
+-   Figure 2g and Extended Data Figure 2j-o
 
 This script analyzes associations of TMB, mutational signatures, and neoantigen load with overall survival from ICB start.
 
@@ -29,7 +29,7 @@ This script analyzes associations of TMB, mutational signatures, and neoantigen 
 
 -   Tests survival associations within specific TMB strata (e.g., hypermutators).
 
-# Extended Data Fig. 1a
+# Figure 2e
 
 Setup: Load all libraries and the unified master data table.
 
@@ -216,7 +216,7 @@ final_plot_annotated <- final_plot + plot_annotation(
 print(final_plot_annotated)
 ```
 
-# Extended Data Fig. 1b
+# Extended Data Fig. 2a
 
 Panel b: Plot longitudinal changes in signature proportions for paired samples.
 
@@ -332,7 +332,7 @@ plot_combined <- ggplot(base_plot_data, aes(x = sample_type, y = Proportion)) +
 print(plot_combined)
 ```
 
-# Extended Data Fig. 1c
+# Extended Data Fig. 2b
 
 Panel c: Plot paired pre-ICB vs. post-ICB TMB on a log scale.
 
@@ -443,7 +443,7 @@ wilcox_result <- wilcox.test(
 cat("\nPaired Wilcoxon test p-value:", wilcox_result$p.value, "\n")
 ```
 
-# Extended Data Fig. 1d
+# Extended Data Fig. 2c
 
 Panel d: Visualize TMB and signature profiles for pre-ICB hypermutator patients.
 
@@ -551,7 +551,7 @@ final_plot_annotated <- final_plot + plot_annotation(
 print(final_plot_annotated)
 ```
 
-# Extended Data Fig. 1f
+# Extended Data Fig. 2d, 2e
 
 Panel f: Plot paired signature composition (pre/post) for patient GBM-131.
 
@@ -606,7 +606,7 @@ stacked_plot <- ggplot(plot_data, aes(x = Timepoint, y = Proportion, fill = Sign
 print(stacked_plot)
 ```
 
-# Extended Data Fig. 1g
+# Extended Data Fig. 2f
 
 Panel g: Generate Kaplan-Meier plot for hypermutators, stratified by MMR signature.
 
@@ -676,7 +676,7 @@ print(summary(cox_model))
 cat("\n")
 ```
 
-# Extended Data Fig. 1h-k
+# Figure 2f and Extended Data Fig. 2g-i
 
 Panel h-k: Run focused survival analysis (KM plots) for MMR signature within TMB strata.
 
@@ -840,7 +840,7 @@ if(nrow(threshold_log) > 0) {
 }
 ```
 
-# Extended Data Fig. 1l-q
+# Figure 2g and Extended Data Fig. 2j-o
 
 Panel l-q: Generate violin, KM, and forest plots for TMB and neoantigen load vs. survival.
 
@@ -850,13 +850,13 @@ full_data <- master_data
 variables_to_analyze_tmb <- c("TMB_latest_pre", "TMB_clonal")
 
 tmb_cohort_full <- full_data %>%
-  filter(!is.na(TMB_latest_pre) & !is.na(os)) %>%
+  filter(!is.na(TMB_latest_pre) & !is.na(osicb)) %>%
   mutate(
-    os_months = as.numeric(os) / 30.44,
+    os_months = as.numeric(osicb) / 30.44,
     os_years = os_months / 12,
     status = if_else(Deceased == "Deceased", 1, 0),
     survival_group = factor(
-      if_else(os >= 547, "LTS (>= 18 mo)", "STS (< 18 mo)"),
+      if_else(osicb >= 547, "LTS (>= 18 mo)", "STS (< 18 mo)"),
       levels = c("STS (< 18 mo)", "LTS (>= 18 mo)")
     ),
     across(all_of(variables_to_analyze_tmb), ~ as.numeric(tidyr::replace_na(., 0)))
@@ -974,13 +974,13 @@ cat("TMB analysis complete.\n\n")
 variables_to_analyze_neo <- c("total_pre_neoantigen_burden", "clonal_neoantigen_burden")
 
 neo_cohort_full <- full_data %>%
-  filter(!is.na(total_pre_neoantigen_burden) & !is.na(os)) %>%
+  filter(!is.na(total_pre_neoantigen_burden) & !is.na(osicb)) %>%
   mutate(
-    os_months = as.numeric(os) / 30.44,
+    os_months = as.numeric(osicb) / 30.44,
     os_years = os_months / 12,
     status = if_else(Deceased == "Deceased", 1, 0),
     survival_group = factor(
-      if_else(os >= 547, "LTS (>= 18 mo)", "STS (< 18 mo)"),
+      if_else(osicb >= 547, "LTS (>= 18 mo)", "STS (< 18 mo)"),
       levels = c("STS (< 18 mo)", "LTS (>= 18 mo)")
     ),
     across(all_of(variables_to_analyze_neo), ~ as.numeric(tidyr::replace_na(., 0)))

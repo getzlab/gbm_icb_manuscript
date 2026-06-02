@@ -3,7 +3,7 @@ title: "CIBERSORTx and MHC expression analysis"
 output: html_notebook
 ---
 
-Run this notebook to generate Extended Data Figure 4i,l,m.
+Run this notebook to generate Extended Data Figure 4h, 4k, 4l.
 
 This notebook analyzes gene expression signatures and CIBERSORTx cell type fraction estimates.
 - Gene expression signatures:
@@ -124,36 +124,6 @@ tidy %>%
   count(cohort, setting, surv_group)
 
 tidy %>% count(mgmt_status, vital_status)
-```
-
-# GLASS vs. ICBL cell type scores (sanity check)
-```{r}
-
-pdf(file = "../results/cohort_vs_cibersort.pdf", width=12, height=6)
-ggboxplot(tidy %>% mutate(cohort_setting = paste(cohort, substr(setting,1,3))), x = 'cohort_setting', y = 'score', facet.by = 'cell_type',
-          scales = 'free_y', add = 'jitter') +
-  theme_classic(base_size = 12) +
-  theme(strip.background = element_blank()) +
-  stat_compare_means(label.y.npc = 0.9, label.x.npc = 0.66, size=2) +
-  rotate_x_text(45)
-
-dev.off()
-```
-
-# GLASS vs. ICB, LTS vs. STS: cell type scores
-```{r}
-
-pdf(file="../results/glass_vs_icb_cibersort.pdf", width=12, height=8)
-ggboxplot(tidy, x = 'plot_group', y = 'score', facet.by = 'cell_type',
-          scales = 'free_y', add = 'jitter') +
-  theme_classic(base_size = 12) +
-  theme(strip.background = element_blank()) +
-  stat_compare_means(comparisons = list(c(1,2), c(3,4)),
-                     label = 'p.signif', step.increase = 0, 
-                     label.y.npc = 0.8, vjust=-0.2) +
-  rotate_x_text(45)
-
-dev.off()
 ```
 
 # ICB: Cell type score vs. Verhaak mesenchymal and proneural scores
@@ -301,119 +271,3 @@ verhaak_mhc_corr <- verhaak_mhc %>%
   ungroup %>% 
   mutate(q = p.adjust(p, method = 'fdr'))
 ```
-
-# Cox regressions
-Account for newly diagnosed vs. recurrent and MGMT status
-
-## GLASS: all cell types
-```{r}
-cibersort_surv_glass <- glass %>% 
-  select(-rna_barcode, -cohort, -all_of(drop)) %>% 
-  group_by(case_barcode) %>% 
-  mutate_at(cols, mean) %>% 
-  ungroup %>% 
-  distinct(case_barcode, .keep_all = TRUE) %>% 
-  mutate_at(cols, ~ as.numeric(scale(.))) %>% 
-  mutate(mgmt_status = ifelse(str_equal(mgmt_status, 'U'), 0, 1), # group partially with methylated
-         vital_status = str_equal(vital_status, 'dead'),
-         os = os * 30.4375) %>% 
-  pivot_longer(cols = all_of(cols),
-               names_to = 'cell_type',
-               values_to = 'score') 
-
-cox_results_glass <- cibersort_surv_glass %>% 
-  group_by(cell_type) %>% 
-  nest() %>% 
-  mutate(cox_model = map(data, ~coxph(Surv(os, vital_status) ~ setting + mgmt_status + score,
-                                       data = .x)),
-         summary = map(cox_model, broom::tidy)) %>% 
-  unnest(summary) %>% 
-  ungroup %>% 
-  filter(str_equal(term, 'score')) %>% 
-  mutate(HR = exp(estimate),
-         q = p.adjust(p.value, method = 'fdr'))
-```
-
-## ICB: all cell types
-```{r}
-cibersort_surv_icb <- icb %>% 
-  select(-rna_barcode, -cohort, -all_of(drop)) %>% 
-  group_by(case_barcode) %>% 
-  mutate_at(cols, mean) %>% 
-  ungroup %>% 
-  distinct(case_barcode, .keep_all = TRUE) %>% 
-  mutate_at(cols, ~ as.numeric(scale(.))) %>% 
-  mutate(mgmt_status = ifelse(str_equal(mgmt_status, 'Unmethylated'), 0, 1), # group partially with methylated
-         vital_status = str_equal(vital_status, 'Deceased'),
-         os = os * 30.4375) %>% 
-  pivot_longer(cols = all_of(cols),
-               names_to = 'cell_type',
-               values_to = 'score') 
-  
-cox_results_icb <- cibersort_surv_icb %>% 
-  group_by(cell_type) %>% 
-  nest() %>% 
-  mutate(cox_model = map(data, ~coxph(Surv(os, vital_status) ~ setting + mgmt_status + score,
-                                       data = .x)),
-         summary = map(cox_model, broom::tidy)) %>% 
-  unnest(summary) %>% 
-  ungroup %>% 
-  filter(str_equal(term, 'score')) %>% 
-  mutate(HR = exp(estimate),
-         q = p.adjust(p.value, method = 'fdr'))
-```
-
-## Compare ICB and GLASS scores
-```{r}
-cox_results <- cox_results_glass %>% 
-  left_join(cox_results_icb, by = 'cell_type',
-            suffix = c('_GLASS', '_ICB'))
-
-ggscatter(cox_results, x = 'HR_ICB', y = 'HR_GLASS',
-          label = 'cell_type', repel = TRUE) +
-  coord_fixed() +
-  # coord_fixed(xlim = c(0,1), ylim = c(0,1)) +
-  geom_vline(xintercept = 1, linetype = 'longdash') +
-  geom_hline(yintercept = 1, linetype = 'longdash')
-```
-
-## By MHC expression
-```{r}
-mhc_surv <- mhc_icb %>% 
-  inner_join(icb, by = c('sample_id' = 'rna_barcode')) %>% 
-  mutate(across(starts_with('GOCC_'), ~ as.numeric(scale(.)))) %>% 
-  select(all_of(names(mhc_icb)), case_barcode, setting, mgmt_status, os, vital_status) %>% 
-  group_by(case_barcode) %>% 
-  mutate(mhc = mean(GOCC_MHC_PROTEIN_COMPLEX),
-         mgmt_status = ifelse(str_equal(mgmt_status, 'Unmethylated'), 0, 1),
-         vital_status = str_equal(vital_status, 'Deceased'),
-         os = os * 30.4375) %>% # group partially with methylated
-  ungroup %>% 
-  select(-(1:4)) %>% 
-  distinct
-
-cox_model <- coxph(Surv(os, vital_status) ~ setting + mgmt_status + mhc,
-                   data = mhc_surv)
-
-summary(cox_model)
-
-# include these results in a small table
-```
-
-# ICB: MHC pre-post
-```{r}
-mhc_prepost <- mhc_icb %>%
-  left_join(sx_icb, by = 'sample_id') %>% 
-  select(participant_id, pre_post, GOCC_MHC_PROTEIN_COMPLEX) %>% 
-  group_by(participant_id, pre_post) %>% 
-  summarize(mhc = mean(GOCC_MHC_PROTEIN_COMPLEX),
-            .groups = 'drop') %>% 
-  pivot_wider(names_from = 'pre_post',
-              values_from = 'mhc') %>% 
-  drop_na
-
-ggpaired(mhc_prepost, cond1 = 'Pre', cond2 = 'Post') +
-  stat_compare_means(paired = TRUE)
-```
-
-

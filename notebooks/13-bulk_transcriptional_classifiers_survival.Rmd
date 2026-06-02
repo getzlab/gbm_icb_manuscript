@@ -5,9 +5,9 @@ output: html_document
 
 Run this notebook to generate
 
-* Figure 2a, 2b
+* Figure 4a, 4b, 4c, 4d
 
-* Extended Data Figure 4c, 4d, 4e, 4f, 4g, 4h, 4j, 4k
+* Extended Data Figure 4c, 4d, 4e, 4f, 4i, 4j
 
 * Extended Data Figure 6a-d, 6e, 6f, 6g
 
@@ -24,12 +24,12 @@ This script analyzes bulk RNA-seq transcriptional subtypes and their association
 # Load data
 
 ```{r}
+library(mclust)
 library(tidyverse)
 library(survival)
 library(survminer)
 library(RColorBrewer)
 library(ggalluvial)
-library(mclust)
 library(broom)
 library(patchwork)
 library(readxl)
@@ -39,7 +39,7 @@ zenodo_dir_path <- "../data/bulk_transcriptional_classifiers"
 icb_data_raw <- read_tsv(file.path(zenodo_dir_path, "icb_cohort_unified.tsv"), show_col_types = FALSE)
 glass_data_raw <- read_tsv(file.path(zenodo_dir_path, "glass_cohort_clinical_subtypes.tsv"), show_col_types = FALSE)
 sc_scores <- read_tsv(file.path(zenodo_dir_path, "sc_classifier_scores.tsv"), show_col_types = FALSE)
-verhaak_scores <- read_excel(file.path(zenodo_dir_path, "bulk_verhaak_ssgsea_scores.xlsx"), skip = 1)
+verhaak_scores <- read_excel("../data/icb_ssgsea_verhaak.xlsx", skip = 1)
 ```
 
 # Data pre-processing
@@ -157,7 +157,7 @@ df_all_cohort_base <- rbind(df_recurrent_base, df_newly_diagnosed_base)
 max_time_years_4e <- ceiling(max(df_all_cohort_base$survival_years, na.rm = TRUE))
 
 #Object 4: Subtype by Dexamethasone (ExtDataFig 4g)
-analysis_data_4g <- icb_data_raw %>%
+analysis_data_4f <- icb_data_raw %>%
   rename(
     verhaak = verhaak_subtype_pre,
     dex_start_raw = `Dex at start of ICB`
@@ -190,12 +190,12 @@ analysis_data_4g <- icb_data_raw %>%
     se    = ifelse(Deceased == "Deceased", 1, 0)
   )
 
-#Object 5 & 6: HLA ssGSEA Survival (ExtDataFig 4j, Fig 2b)
+#Object 5 & 6: HLA ssGSEA Survival (ExtDataFig 4j, Fig 4d)
 data_hla_surv <- icb_data_raw %>%
   mutate(osicb_years = as.numeric(osicb) / 365.25)
 
-# --- Object 7: MES vs PN Survival (Fig 2a) ---
-data_fig2a <- icb_data_raw %>%
+# --- Object 7: MES vs PN Survival (Fig 4a) ---
+data_fig4a <- icb_data_raw %>%
   mutate(osicb_years = as.numeric(osicb) / 365.25) %>%
   filter(
     verhaak_subtype_pre %in% c("MESENCHYMAL", "PRONEURAL"),
@@ -295,23 +295,23 @@ comparisons_glass_6g <- tribble(
 )
 ```
 
-# Fig. 2a
+# Fig. 4a
 
 Creates the Kaplan-Meier survival curve comparing Verhaak Mesenchymal (MES) vs. Proneural (PN) pre-ICB subtypes.
 
 ```{r}
-surv_object_subtype <- Surv(time = data_fig2a$osicb_years, event = data_fig2a$Deceased == "Deceased")
-km_fit_subtype <- survfit(surv_object_subtype ~ subtype_factor, data = data_fig2a)
+surv_object_subtype <- Surv(time = data_fig4a$osicb_years, event = data_fig4a$Deceased == "Deceased")
+km_fit_subtype <- survfit(surv_object_subtype ~ subtype_factor, data = data_fig4a)
 
-n_pn <- sum(data_fig2a$subtype_factor == "PRONEURAL")
-n_mes <- sum(data_fig2a$subtype_factor == "MESENCHYMAL")
-max_time_2a <- ceiling(max(data_fig2a$osicb_years, na.rm = TRUE)) 
+n_pn <- sum(data_fig4a$subtype_factor == "PRONEURAL")
+n_mes <- sum(data_fig4a$subtype_factor == "MESENCHYMAL")
+max_time_4a <- ceiling(max(data_fig4a$osicb_years, na.rm = TRUE)) 
 
-plot_subtype <- ggsurvplot(km_fit_subtype, data = data_fig2a,
+plot_subtype <- ggsurvplot(km_fit_subtype, data = data_fig4a,
            pval = TRUE,
-           pval.coord = c(max_time_2a * 0.9, 0.8),
+           pval.coord = c(max_time_4a * 0.9, 0.8),
            break.time.by = 1,
-           xlim = c(0, max_time_2a),
+           xlim = c(0, max_time_4a),
            conf.int = FALSE,
            risk.table = FALSE,
            palette = c("#4E84C4", "#BF1E2E"), 
@@ -333,7 +333,7 @@ plot_subtype <- ggsurvplot(km_fit_subtype, data = data_fig2a,
 print(plot_subtype)
 ```
 
-# Fig. 2b
+# Fig. 4d
 
 Creates the Kaplan-Meier survival curve comparing high vs. low HLA class I ssGSEA scores.
 
@@ -475,7 +475,7 @@ plot_list_4e$rec <- ggsurvplot(
 print(plot_list_4e$rec)
 ```
 
-# Extended Data Fig. 4f
+# Figure 4b and 4c
 
 Creates Kaplan-Meier survival curves for MES vs. non-MES patients, restricted to samples collected \<=35 days before ICB.
 
@@ -483,7 +483,7 @@ Creates Kaplan-Meier survival curves for MES vs. non-MES patients, restricted to
 threshold_4f <- 35
 plot_list_4f <- list()
 
-# 1. All Cohort (<= 35 days)
+# 1. All Cohort (<= 35 days) - Figure 4b
 df_filtered_all <- df_all_cohort_base %>% filter(days_pre_icb <= threshold_4f)
 if(nrow(df_filtered_all) > 1 && n_distinct(df_filtered_all$subtype_binary) > 1) {
   surv_obj_all <- Surv(time = df_filtered_all$survival_years, event = df_filtered_all$event)
@@ -496,7 +496,7 @@ if(nrow(df_filtered_all) > 1 && n_distinct(df_filtered_all$subtype_binary) > 1) 
   print(plot_list_4f$all)
 }
 
-# 2. Newly Diagnosed (<= 35 days)
+# 2. Newly Diagnosed (<= 35 days) - Figure 4c
 df_filtered_new <- df_newly_diagnosed_base %>% filter(days_pre_icb <= threshold_4f)
 if(nrow(df_filtered_new) > 1 && n_distinct(df_filtered_new$subtype_binary) > 1) {
   surv_obj_new <- Surv(time = df_filtered_new$survival_years, event = df_filtered_new$event)
@@ -509,7 +509,7 @@ if(nrow(df_filtered_new) > 1 && n_distinct(df_filtered_new$subtype_binary) > 1) 
   print(plot_list_4f$new)
 }
 
-# 3. Recurrent (<= 35 days)
+# 3. Recurrent (<= 35 days) - Figure 4c
 df_filtered_rec <- df_recurrent_base %>% filter(days_pre_icb <= threshold_4f)
 if(nrow(df_filtered_rec) > 1 && n_distinct(df_filtered_rec$subtype_binary) > 1) {
   surv_obj_rec <- Surv(time = df_filtered_rec$survival_years, event = df_filtered_rec$event)
@@ -523,7 +523,7 @@ if(nrow(df_filtered_rec) > 1 && n_distinct(df_filtered_rec$subtype_binary) > 1) 
 }
 ```
 
-# Extended Data Fig. 4g
+# Extended Data Fig. 4f
 
 Creates Kaplan-Meier survival curves for MES, non-MES, and PN subgroups, stratified by Dexamethasone (DEX) use.
 
@@ -531,7 +531,7 @@ Creates Kaplan-Meier survival curves for MES, non-MES, and PN subgroups, stratif
 plot_list_4g <- list()
 
 # 1. MESENCHYMAL Subgroup
-mes_only_data <- analysis_data_4g %>% filter(mes == "Mesenchymal")
+mes_only_data <- analysis_data_4f %>% filter(mes == "Mesenchymal")
 fit_mes <- survfit(Surv(sticy, se) ~ binary_dex_icb, data = mes_only_data)
 plot_list_4g$mes <- ggsurvplot(
   fit_mes, data = mes_only_data, pval = TRUE, title = "Mesenchymal Subgroup",
@@ -541,7 +541,7 @@ plot_list_4g$mes <- ggsurvplot(
 print(plot_list_4g$mes)
 
 # 2. NON-MESENCHYMAL Subgroup
-non_mes_data <- analysis_data_4g %>% filter(mes == "Non-Mesenchymal")
+non_mes_data <- analysis_data_4f %>% filter(mes == "Non-Mesenchymal")
 fit_non_mes <- survfit(Surv(sticy, se) ~ binary_dex_icb, data = non_mes_data)
 plot_list_4g$non_mes <- ggsurvplot(
   fit_non_mes, data = non_mes_data, pval = TRUE, title = "Non-Mesenchymal Subgroup",
@@ -551,7 +551,7 @@ plot_list_4g$non_mes <- ggsurvplot(
 print(plot_list_4g$non_mes)
 
 # 3. PRONEURAL Subgroup
-pn_only_data <- analysis_data_4g %>% filter(mvp == "Proneural")
+pn_only_data <- analysis_data_4f %>% filter(mvp == "Proneural")
 fit_pn <- survfit(Surv(sticy, se) ~ binary_dex_icb, data = pn_only_data)
 plot_list_4g$pn <- ggsurvplot(
   fit_pn, data = pn_only_data, pval = TRUE, title = "Proneural Subgroup",
@@ -561,9 +561,9 @@ plot_list_4g$pn <- ggsurvplot(
 print(plot_list_4g$pn)
 ```
 
-# Extended Data Fig. 4j
+# Extended Data Fig. 4i
 
-Creates a Kaplan-Meier survival curve for patients stratified by high vs. low HLA class II ssGSEA scores.For the panel_Fig2a chunk:
+Creates a Kaplan-Meier survival curve for patients stratified by high vs. low HLA class II ssGSEA scores.For the panel_Fig4a chunk:
 
 ```{r}
 tmb_quantiles_II <- quantile(data_hla_surv$GOCC_MHC_CLASS_II_PROTEIN_COMPLEX_pre, probs = c(0.25, 0.75), na.rm = TRUE)
@@ -607,7 +607,7 @@ plot_II <- ggsurvplot(km_fit_II, data = data_filtered_II,
 print(plot_II)
 ```
 
-# Extended Data Fig. 4k
+# Extended Data Fig. 4j
 
 Creates Kaplan-Meier curves for the GLASS cohort, stratified by high vs. low HLA class I and class II ssGSEA scores.
 

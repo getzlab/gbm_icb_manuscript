@@ -6,9 +6,7 @@ editor: visual
 
 Run this notebook to generate
 
-* Figure 2i, 2j
-
-* Extended Data Figure 7d
+* Figure 5b, 5g, 5h
 
 * Extended Data Figure 8a, 8b, 8c, 8d, 8e
 
@@ -46,7 +44,7 @@ library(coxphf)
 metadata_ICB <- readRDS(file = "../data/metadata_ICB.rds")
 metadata_ICB %>% dim() # 666948  15
 
-project_metadata <- readRDS(file = "../data/Single cell portal/project_metadata_ICB.rds")
+project_metadata <- readRDS(file = "../data/project_metadata_ICB.rds")
 
 pseudobulk_pre_path <- "../data/pseudobulks_by_sample_cell_type_pre_TPM.rds"
 pseudobulks_pre_tpm <- readRDS(pseudobulk_pre_path)
@@ -152,11 +150,11 @@ CELL_TYPE_NK_CELL_C <- "#9d94ff"
 
 ```
 
-# Figure 2i
+# Extended Data Figure 8b
 
 MES Score Bivariate Survival Analysis with Forest Plot. Calculate MES scores over pseudo-bulk objects (on a per-sample basis), run bivariate Cox model, create forest plot.
 
-```{r Fig.2i-MES-signal-source-vs-survival}
+```{r Ex.Fig.8b-MES-signal-source-vs-survival}
 
 library(coxphf)
 library(survival)
@@ -390,11 +388,11 @@ print(final_forest_plot)
 
 ```
 
-# Figure 2j
+# Figure 5g
 
 Compare HLA class I scores across different malignant cell-states over pseudo-bulk objects
 
-```{r Fig.2j-HLA-class-I-scores-by-malignant-subtype}
+```{r Fig.5g-HLA-class-I-scores-by-malignant-subtype}
 
 library(Matrix)
 library(scalop)
@@ -631,11 +629,11 @@ cat("=== Analysis Complete ===\n")
 cat("Plot saved to: /n/scratch/users/j/jag9838/GBM_ICB/outputs_final/HLA_Class_I_UNPAIRED_PreICB_upfront.pdf\n")
 ```
 
-# Extended Data Figure 7d
+# Figure 5b
 
 Expression of Verhaak signature genes across patient samples, with corresponding bulk-RNA and snRNA-seq Verhaak annotations
 
-```{r Ex.Fig.7d-Verhaak-classification-expression-by-patient}
+```{r Fig.5b-Verhaak-classification-expression-by-patient}
 
 pseudobulks_by_sample_pre_TPM <- readRDS(file = "../data/pseudobulks_by_sample_pre_TPM.rds")
 pseudobulks_by_sample_cell_type_pre_TPM <- readRDS(file = "../data/pseudobulks_by_sample_cell_type_pre_TPM.rds")
@@ -987,11 +985,11 @@ fraction_of_mes_signal_by_patient_MES_only %>%
 
 ```
 
-# Extended Data Figure 8b
+# Extended Data Figure 8c
 
 left panel: Compare the source of the HLA class I signal by cell type (as the fraction of the total HLA class I signal in a given sample) in MESENCHYMAL vs. non-MESENCHYMAL samples
 
-```{r Ex.Fig.8b-left-HLA-class-I-signal-by-cell-type-in-MES-vs-non-MES-samples}
+```{r Ex.Fig.8c-left-HLA-class-I-signal-by-cell-type-in-MES-vs-non-MES-samples}
 
 # Load TPM expression matrix to filter genes
 exp_mat_all_tpm_HLA <- readRDS("../data/exp_mat_all_tpm_HLA.rds")
@@ -1147,11 +1145,11 @@ fraction_of_hla_class_i_signal_by_patient %>%
 
 ```
 
-# Extended Data Figure 8c
+# Figure 5h
 
 Compare HLA class II scores, based on bulk expression scores, per malignant cell-state
 
-```{r Ex.Fig.8c-compare-bulk-expression-HLA-class-II-scores-by-malignant-cell-state}
+```{r Fig.5h-compare-bulk-expression-HLA-class-II-scores-by-malignant-cell-state}
 
 exp_mat_all_tpm_HLA <- readRDS("backup_temp_data/Single cell portal/exp_mat_all_tpm_HLA.rds")
 
